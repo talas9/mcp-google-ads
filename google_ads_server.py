@@ -1890,6 +1890,483 @@ async def generic_mutate(
 
 
 # =============================================================================
+# SNAPSHOT & CHANGELOG TOOLS
+# =============================================================================
+
+SNAPSHOTS_DIR = Path("/home/talas9/talas-ads/snapshots")
+CHANGELOG_PATH = Path("/home/talas9/talas-ads/changelog.jsonl")
+
+# Ensure snapshots directory exists
+SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _gaql_search(customer_id: str, query: str) -> list:
+    """Execute a GAQL query and return raw result rows (list of dicts).
+
+    Handles credentials, headers, pagination via nextPageToken, and error raising
+    so callers get a simple list back.
+    """
+    creds = get_credentials()
+    headers = get_headers(creds)
+    formatted_id = format_customer_id(customer_id)
+    url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_id}/googleAds:search"
+
+    all_results = []
+    payload = {"query": query}
+
+    while True:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            raise Exception(f"GAQL query failed ({response.status_code}): {response.text}")
+        data = response.json()
+        all_results.extend(data.get("results", []))
+        next_token = data.get("nextPageToken")
+        if not next_token:
+            break
+        payload["pageToken"] = next_token
+
+    return all_results
+
+
+@mcp.tool()
+async def create_snapshot(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes). Example: '3552856345'"),
+    description: str = Field(default="manual", description="Short description for the snapshot (used in filename, e.g. 'before_pause_campaign')")
+) -> str:
+    """
+    Capture the full account state and save it as a JSON snapshot.
+
+    Captures:
+    - All campaigns (id, name, status, budget, bidding strategy, channel type, geo targets)
+    - All ad groups (id, name, status, campaign, cpc bid)
+    - All keywords (ad group, text, match type, status, criterion id)
+    - All negative keywords (campaign level)
+    - All ads (id, status, ad group, headlines, descriptions, final urls)
+
+    The snapshot is saved to /home/talas9/talas-ads/snapshots/{timestamp}_{description}.json
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        description: Short description for the snapshot filename
+
+    Returns:
+        The snapshot filename and a summary of captured entities
+    """
+    try:
+        formatted_id = format_customer_id(customer_id)
+        snapshot = {
+            "metadata": {
+                "customer_id": formatted_id,
+                "description": description,
+                "captured_at": datetime.utcnow().isoformat() + "Z",
+            },
+            "campaigns": [],
+            "ad_groups": [],
+            "keywords": [],
+            "negative_keywords": [],
+            "ads": [],
+        }
+
+        # --- Campaigns -----------------------------------------------------------
+        campaign_query = """
+            SELECT
+                campaign.id,
+                campaign.name,
+                campaign.status,
+                campaign.campaign_budget,
+                campaign.bidding_strategy_type,
+                campaign.advertising_channel_type
+            FROM campaign
+            WHERE campaign.status != 'REMOVED'
+        """
+        campaign_rows = _gaql_search(customer_id, campaign_query)
+        for row in campaign_rows:
+            c = row.get("campaign", {})
+            snapshot["campaigns"].append({
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "status": c.get("status"),
+                "budget": c.get("campaignBudget"),
+                "bidding_strategy_type": c.get("biddingStrategyType"),
+                "channel_type": c.get("advertisingChannelType"),
+            })
+
+        # --- Geo targets per campaign --------------------------------------------
+        geo_query = """
+            SELECT
+                campaign.id,
+                campaign_criterion.location.geo_target_constant,
+                campaign_criterion.negative
+            FROM campaign_criterion
+            WHERE campaign_criterion.type = 'LOCATION'
+        """
+        try:
+            geo_rows = _gaql_search(customer_id, geo_query)
+            # Build a map campaign_id -> list of geo targets
+            geo_map: Dict[str, list] = {}
+            for row in geo_rows:
+                cid = row.get("campaign", {}).get("id")
+                criterion = row.get("campaignCriterion", {})
+                geo_entry = {
+                    "geo_target_constant": criterion.get("location", {}).get("geoTargetConstant"),
+                    "negative": criterion.get("negative", False),
+                }
+                geo_map.setdefault(cid, []).append(geo_entry)
+            # Attach geo targets to campaigns
+            for camp in snapshot["campaigns"]:
+                camp["geo_targets"] = geo_map.get(camp["id"], [])
+        except Exception as e:
+            logger.warning(f"Could not fetch geo targets: {e}")
+            for camp in snapshot["campaigns"]:
+                camp["geo_targets"] = []
+
+        # --- Ad Groups -----------------------------------------------------------
+        ag_query = """
+            SELECT
+                ad_group.id,
+                ad_group.name,
+                ad_group.status,
+                ad_group.cpc_bid_micros,
+                campaign.id,
+                campaign.name
+            FROM ad_group
+            WHERE ad_group.status != 'REMOVED'
+        """
+        ag_rows = _gaql_search(customer_id, ag_query)
+        for row in ag_rows:
+            ag = row.get("adGroup", {})
+            c = row.get("campaign", {})
+            snapshot["ad_groups"].append({
+                "id": ag.get("id"),
+                "name": ag.get("name"),
+                "status": ag.get("status"),
+                "cpc_bid_micros": ag.get("cpcBidMicros"),
+                "campaign_id": c.get("id"),
+                "campaign_name": c.get("name"),
+            })
+
+        # --- Keywords (ad group level) -------------------------------------------
+        kw_query = """
+            SELECT
+                ad_group.id,
+                ad_group.name,
+                ad_group_criterion.criterion_id,
+                ad_group_criterion.keyword.text,
+                ad_group_criterion.keyword.match_type,
+                ad_group_criterion.status,
+                ad_group_criterion.negative
+            FROM ad_group_criterion
+            WHERE ad_group_criterion.type = 'KEYWORD'
+              AND ad_group_criterion.status != 'REMOVED'
+        """
+        kw_rows = _gaql_search(customer_id, kw_query)
+        for row in kw_rows:
+            ag = row.get("adGroup", {})
+            crit = row.get("adGroupCriterion", {})
+            kw = crit.get("keyword", {})
+            snapshot["keywords"].append({
+                "ad_group_id": ag.get("id"),
+                "ad_group_name": ag.get("name"),
+                "criterion_id": crit.get("criterionId"),
+                "text": kw.get("text"),
+                "match_type": kw.get("matchType"),
+                "status": crit.get("status"),
+                "negative": crit.get("negative", False),
+            })
+
+        # --- Negative Keywords (campaign level) ----------------------------------
+        neg_query = """
+            SELECT
+                campaign.id,
+                campaign.name,
+                campaign_criterion.criterion_id,
+                campaign_criterion.keyword.text,
+                campaign_criterion.keyword.match_type,
+                campaign_criterion.negative
+            FROM campaign_criterion
+            WHERE campaign_criterion.type = 'KEYWORD'
+              AND campaign_criterion.negative = TRUE
+        """
+        try:
+            neg_rows = _gaql_search(customer_id, neg_query)
+            for row in neg_rows:
+                c = row.get("campaign", {})
+                crit = row.get("campaignCriterion", {})
+                kw = crit.get("keyword", {})
+                snapshot["negative_keywords"].append({
+                    "campaign_id": c.get("id"),
+                    "campaign_name": c.get("name"),
+                    "criterion_id": crit.get("criterionId"),
+                    "text": kw.get("text"),
+                    "match_type": kw.get("matchType"),
+                })
+        except Exception as e:
+            logger.warning(f"Could not fetch campaign negative keywords: {e}")
+
+        # --- Ads -----------------------------------------------------------------
+        ads_query = """
+            SELECT
+                ad_group_ad.ad.id,
+                ad_group_ad.status,
+                ad_group_ad.ad.type,
+                ad_group_ad.ad.final_urls,
+                ad_group_ad.ad.responsive_search_ad.headlines,
+                ad_group_ad.ad.responsive_search_ad.descriptions,
+                ad_group.id,
+                ad_group.name,
+                campaign.id,
+                campaign.name
+            FROM ad_group_ad
+            WHERE ad_group_ad.status != 'REMOVED'
+        """
+        ads_rows = _gaql_search(customer_id, ads_query)
+        for row in ads_rows:
+            ad_data = row.get("adGroupAd", {})
+            ad = ad_data.get("ad", {})
+            ag = row.get("adGroup", {})
+            c = row.get("campaign", {})
+            rsa = ad.get("responsiveSearchAd", {})
+            snapshot["ads"].append({
+                "id": ad.get("id"),
+                "status": ad_data.get("status"),
+                "type": ad.get("type"),
+                "final_urls": ad.get("finalUrls", []),
+                "headlines": [h.get("text") for h in rsa.get("headlines", [])] if rsa else [],
+                "descriptions": [d.get("text") for d in rsa.get("descriptions", [])] if rsa else [],
+                "ad_group_id": ag.get("id"),
+                "ad_group_name": ag.get("name"),
+                "campaign_id": c.get("id"),
+                "campaign_name": c.get("name"),
+            })
+
+        # --- Save snapshot -------------------------------------------------------
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        safe_desc = ''.join(c if c.isalnum() or c in '-_' else '_' for c in description)
+        filename = f"{ts}_{safe_desc}.json"
+        filepath = SNAPSHOTS_DIR / filename
+
+        with open(filepath, "w") as f:
+            json.dump(snapshot, f, indent=2, default=str)
+
+        summary = (
+            f"Snapshot saved: {filename}\n"
+            f"  Campaigns: {len(snapshot['campaigns'])}\n"
+            f"  Ad Groups: {len(snapshot['ad_groups'])}\n"
+            f"  Keywords: {len(snapshot['keywords'])}\n"
+            f"  Negative Keywords: {len(snapshot['negative_keywords'])}\n"
+            f"  Ads: {len(snapshot['ads'])}"
+        )
+        return summary
+
+    except Exception as e:
+        return f"Error creating snapshot: {str(e)}"
+
+
+@mcp.tool()
+async def list_snapshots() -> str:
+    """
+    List all saved account snapshots with timestamps and descriptions.
+
+    Returns:
+        Formatted list of snapshot files with their metadata
+    """
+    try:
+        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        files = sorted(SNAPSHOTS_DIR.glob("*.json"), reverse=True)
+
+        if not files:
+            return "No snapshots found."
+
+        lines = ["Saved Snapshots:", "=" * 70]
+        for f in files:
+            # Try to read metadata from the file
+            try:
+                with open(f, "r") as fh:
+                    data = json.load(fh)
+                meta = data.get("metadata", {})
+                captured = meta.get("captured_at", "unknown")
+                desc = meta.get("description", "N/A")
+                cid = meta.get("customer_id", "N/A")
+                counts = (
+                    f"campaigns={len(data.get('campaigns', []))}, "
+                    f"ad_groups={len(data.get('ad_groups', []))}, "
+                    f"keywords={len(data.get('keywords', []))}, "
+                    f"neg_kw={len(data.get('negative_keywords', []))}, "
+                    f"ads={len(data.get('ads', []))}"
+                )
+            except Exception:
+                captured = "error reading"
+                desc = "error"
+                cid = "N/A"
+                counts = "N/A"
+
+            lines.append(f"\n  File: {f.name}")
+            lines.append(f"  Captured: {captured}")
+            lines.append(f"  Account: {cid}")
+            lines.append(f"  Description: {desc}")
+            lines.append(f"  Contents: {counts}")
+            lines.append("-" * 70)
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error listing snapshots: {str(e)}"
+
+
+@mcp.tool()
+async def get_snapshot(
+    filename: str = Field(description="The snapshot filename (e.g. '20260211_143022_before_pause.json')")
+) -> str:
+    """
+    Read and return the contents of a specific snapshot file.
+
+    Args:
+        filename: The snapshot filename to read
+
+    Returns:
+        The full JSON contents of the snapshot
+    """
+    try:
+        filepath = SNAPSHOTS_DIR / filename
+
+        if not filepath.exists():
+            # Try to find a partial match
+            matches = list(SNAPSHOTS_DIR.glob(f"*{filename}*"))
+            if matches:
+                filepath = matches[0]
+            else:
+                available = [f.name for f in SNAPSHOTS_DIR.glob("*.json")]
+                return f"Snapshot '{filename}' not found. Available snapshots: {available}"
+
+        with open(filepath, "r") as f:
+            data = json.load(f)
+
+        return json.dumps(data, indent=2, default=str)
+
+    except Exception as e:
+        return f"Error reading snapshot: {str(e)}"
+
+
+@mcp.tool()
+async def log_change(
+    action: str = Field(description="What was done (e.g. 'pause_campaign', 'add_negative_keywords', 'update_geo_targeting')"),
+    details: str = Field(description="Specifics of the change — campaign name, keywords added, old/new values, etc."),
+    reason: str = Field(description="Why the change was made"),
+    snapshot_before: str = Field(default="", description="Reference to snapshot file taken before the change (filename, optional)"),
+    agent: str = Field(default="google-ads-analyst", description="Which agent made the change")
+) -> str:
+    """
+    Log a change entry to the append-only changelog (JSONL format).
+
+    Each entry is a single JSON line in /home/talas9/talas-ads/changelog.jsonl containing:
+    - timestamp (ISO format)
+    - action
+    - details
+    - reason
+    - snapshot_before
+    - agent
+
+    Args:
+        action: What was done
+        details: Specifics of the change
+        reason: Why the change was made
+        snapshot_before: Reference to snapshot file taken before the change
+        agent: Which agent made the change
+
+    Returns:
+        Confirmation that the entry was logged
+    """
+    try:
+        entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "action": action,
+            "details": details,
+            "reason": reason,
+            "snapshot_before": snapshot_before,
+            "agent": agent,
+        }
+
+        # Append to changelog (JSONL — one JSON object per line)
+        with open(CHANGELOG_PATH, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+
+        return f"Change logged: [{entry['timestamp']}] {action} by {agent}"
+
+    except Exception as e:
+        return f"Error logging change: {str(e)}"
+
+
+@mcp.tool()
+async def get_changelog(
+    date_from: str = Field(default="", description="Start date filter (ISO format, e.g. '2026-01-01'). Leave empty for no lower bound."),
+    date_to: str = Field(default="", description="End date filter (ISO format, e.g. '2026-02-11'). Leave empty for no upper bound."),
+    action_filter: str = Field(default="", description="Filter by action type (e.g. 'pause_campaign'). Leave empty for all actions."),
+    limit: int = Field(default=50, description="Maximum number of entries to return (most recent first)")
+) -> str:
+    """
+    Return changelog entries, optionally filtered by date range or action type.
+
+    Args:
+        date_from: Start date filter (ISO format). Leave empty for no lower bound.
+        date_to: End date filter (ISO format). Leave empty for no upper bound.
+        action_filter: Filter by action type. Leave empty for all actions.
+        limit: Maximum number of entries to return (most recent first, default 50)
+
+    Returns:
+        Formatted changelog entries
+    """
+    try:
+        if not CHANGELOG_PATH.exists():
+            return "No changelog found. No changes have been logged yet."
+
+        entries = []
+        with open(CHANGELOG_PATH, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+
+        if not entries:
+            return "Changelog is empty."
+
+        # Apply filters
+        if date_from:
+            entries = [e for e in entries if e.get("timestamp", "") >= date_from]
+        if date_to:
+            # Add a day boundary so "2026-02-11" includes the whole day
+            to_bound = date_to + "T23:59:59Z" if "T" not in date_to else date_to
+            entries = [e for e in entries if e.get("timestamp", "") <= to_bound]
+        if action_filter:
+            entries = [e for e in entries if e.get("action", "") == action_filter]
+
+        # Most recent first, apply limit
+        entries = list(reversed(entries))[:limit]
+
+        if not entries:
+            return "No changelog entries match the given filters."
+
+        lines = [f"Changelog ({len(entries)} entries):", "=" * 80]
+        for e in entries:
+            lines.append(f"\n  Timestamp: {e.get('timestamp', 'N/A')}")
+            lines.append(f"  Action: {e.get('action', 'N/A')}")
+            lines.append(f"  Details: {e.get('details', 'N/A')}")
+            lines.append(f"  Reason: {e.get('reason', 'N/A')}")
+            lines.append(f"  Snapshot Before: {e.get('snapshot_before', 'N/A') or 'none'}")
+            lines.append(f"  Agent: {e.get('agent', 'N/A')}")
+            lines.append("-" * 80)
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error reading changelog: {str(e)}"
+
+
+# =============================================================================
 # GOOGLE BUSINESS PROFILE TOOLS
 # =============================================================================
 
