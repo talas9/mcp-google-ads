@@ -1,0 +1,5 @@
+This update adds important security improvements to the image asset download logic. By validating and sanitizing the output directory using pathlib and restricting file writes to directories under the current working directory, you effectively mitigate path traversal risks. The fallback to a safe default directory and logging for invalid paths is a solid approach.
+
+Switching from os.path to pathlib also makes the code more readable and modern. The error handling for directory creation is a nice touch.
+
+Overall, these changes strengthen the robustness and security of the file management process. Well done!
