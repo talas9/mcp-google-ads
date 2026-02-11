@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import Field
 import os
 import json
+import re
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2539,6 +2540,280 @@ async def update_gbp_location(
         return f"Error parsing update body JSON: {str(e)}"
     except Exception as e:
         return f"Error updating location: {str(e)}"
+
+
+@mcp.tool()
+async def create_smart_campaign(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes). Example: '3552856345'"),
+    campaign_name: str = Field(description="Name for the new Smart campaign"),
+    budget_amount_micros: int = Field(description="Daily budget in micros (e.g., 10000000 = 10 AED/day)"),
+    business_profile_location: str = Field(description="Business Profile location resource name (e.g., 'locations/1143655102933104789')"),
+    phone_number: str = Field(description="Phone number with country code (e.g., '+971 56 404 5033')"),
+    final_url: str = Field(description="Landing page URL for the campaign"),
+    language_code: str = Field(default="en", description="Advertising language code (e.g., 'en', 'ar')"),
+    geo_targets: list = Field(description="List of geo target constant IDs (e.g., [2512, 2784] for UAE and Oman)"),
+    keyword_themes: list = Field(default=[], description="Optional list of keyword theme strings (free-form text)"),
+    headlines: str = Field(default="", description="Optional pipe-separated headlines (min 3). If empty, will use Smart campaign suggestions"),
+    descriptions: str = Field(default="", description="Optional pipe-separated descriptions (min 2). If empty, will use Smart campaign suggestions")
+) -> str:
+    """
+    Create a Smart campaign using the Google Ads Smart Campaign Management API.
+
+    Smart campaigns are simplified campaigns designed for small businesses that use
+    machine learning to automate targeting, bidding, and ad creation.
+
+    This tool creates all required entities in a single atomic mutate request:
+    1. Campaign Budget (type: SMART_CAMPAIGN)
+    2. Campaign (channel: SMART, subtype: SMART_CAMPAIGN)
+    3. Smart Campaign Setting (business details, phone, language)
+    4. Campaign Criteria (geo targets and keyword themes)
+    5. Ad Group (type: SMART_CAMPAIGN_ADS)
+    6. Ad Group Ad (headlines and descriptions)
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        campaign_name: Name for the new Smart campaign
+        budget_amount_micros: Daily budget in micros (1,000,000 micros = 1 currency unit)
+        business_profile_location: Google Business Profile location resource name
+            Format: "locations/LOCATION_ID" (e.g., "locations/1143655102933104789")
+        phone_number: Business phone number with country code
+            Format: "+[country_code] [number]" (e.g., "+971 56 404 5033")
+        final_url: Landing page URL for ads
+        language_code: Advertising language (ISO 639-1 code, e.g., "en", "ar")
+        geo_targets: List of geo target constant IDs
+            Example: [2512, 2784] for UAE and Oman
+            Find IDs at: https://developers.google.com/google-ads/api/data/geotargets
+        keyword_themes: Optional list of keyword theme strings (free-form text)
+            Example: ["tesla parts", "electric car parts"]
+            If empty, Smart campaign will auto-select themes
+        headlines: Optional pipe-separated headlines (min 3, max 15)
+            Example: "Tesla Parts Dubai|Genuine Parts|Fast Delivery"
+            If empty, Smart campaign will auto-generate headlines
+        descriptions: Optional pipe-separated descriptions (min 2, max 4)
+            Example: "Best prices on Tesla parts|Same day delivery in UAE"
+            If empty, Smart campaign will auto-generate descriptions
+
+    Returns:
+        Success message with campaign details or error message
+
+    Example:
+        customer_id: "3552856345"
+        campaign_name: "9-QZ3-TESLA-English"
+        budget_amount_micros: 10000000  # 10 AED/day
+        business_profile_location: "locations/1143655102933104789"
+        phone_number: "+971 56 404 5033"
+        final_url: "https://example.com/landing-page"
+        language_code: "en"
+        geo_targets: [2512, 2784]  # UAE + Oman
+        keyword_themes: ["tesla parts", "electric vehicle parts"]
+        headlines: "Tesla Parts UAE|Genuine Tesla Parts|Fast Delivery"
+        descriptions: "Best prices on Tesla parts|Same day delivery available"
+
+    Note:
+        - Campaign is created in PAUSED status for review before enabling
+        - All entities are created atomically (all succeed or all fail)
+        - Uses temporary resource names (-1, -2, -3) for cross-referencing
+        - SmartCampaignSetting uses UPDATE operation (not CREATE) per API design
+        - Phone number will be parsed to extract country code and number
+    """
+    try:
+        formatted_id = format_customer_id(customer_id)
+
+        # Parse phone number to extract country code and number
+        # Expected format: "+971 56 404 5033" or similar
+        phone_clean = phone_number.strip().replace(" ", "").replace("-", "")
+        if not phone_clean.startswith("+"):
+            return f"Error: Phone number must start with + (country code). Got: {phone_number}"
+
+        # Extract country code (first 1-3 digits after +)
+        # For UAE: +971, for US: +1, etc.
+        phone_match = re.match(r'\+(\d{1,3})(\d+)', phone_clean)
+        if not phone_match:
+            return f"Error: Invalid phone number format. Expected: +[country_code][number]. Got: {phone_number}"
+
+        country_code = phone_match.group(1)
+        phone_digits = phone_match.group(2)
+
+        # Ensure business_profile_location has correct format
+        if not business_profile_location.startswith("locations/"):
+            business_profile_location = f"locations/{business_profile_location}"
+
+        # Build operations array using temporary resource names
+        operations = []
+
+        # 1. Create Campaign Budget (temporary ID: -1)
+        budget_operation = {
+            "campaignBudgetOperation": {
+                "create": {
+                    "resourceName": f"customers/{formatted_id}/campaignBudgets/-1",
+                    "name": f"{campaign_name} Budget",
+                    "type": "SMART_CAMPAIGN",
+                    "deliveryMethod": "STANDARD",
+                    "amountMicros": str(budget_amount_micros)
+                }
+            }
+        }
+        operations.append(budget_operation)
+
+        # 2. Create Campaign (temporary ID: -2)
+        campaign_operation = {
+            "campaignOperation": {
+                "create": {
+                    "resourceName": f"customers/{formatted_id}/campaigns/-2",
+                    "name": campaign_name,
+                    "status": "PAUSED",  # Start paused for review
+                    "advertisingChannelType": "SMART",
+                    "advertisingChannelSubType": "SMART_CAMPAIGN",
+                    "campaignBudget": f"customers/{formatted_id}/campaignBudgets/-1"
+                }
+            }
+        }
+        operations.append(campaign_operation)
+
+        # 3. Create Smart Campaign Setting (uses UPDATE operation with temporary ID)
+        # Note: SmartCampaignSetting is unique - it only supports UPDATE, not CREATE
+        smart_setting_operation = {
+            "smartCampaignSettingOperation": {
+                "update": {
+                    "resourceName": f"customers/{formatted_id}/smartCampaignSettings/-2",
+                    "phoneNumber": {
+                        "countryCode": country_code,
+                        "phoneNumber": phone_digits
+                    },
+                    "finalUrl": final_url,
+                    "advertisingLanguageCode": language_code,
+                    "businessProfileLocation": business_profile_location
+                },
+                "updateMask": "phoneNumber,finalUrl,advertisingLanguageCode,businessProfileLocation"
+            }
+        }
+        operations.append(smart_setting_operation)
+
+        # 4. Create Campaign Criteria for geo targets
+        for geo_target_id in geo_targets:
+            geo_operation = {
+                "campaignCriterionOperation": {
+                    "create": {
+                        "campaign": f"customers/{formatted_id}/campaigns/-2",
+                        "location": {
+                            "geoTargetConstant": f"geoTargetConstants/{geo_target_id}"
+                        },
+                        "status": "ENABLED"
+                    }
+                }
+            }
+            operations.append(geo_operation)
+
+        # 5. Create Campaign Criteria for keyword themes (if provided)
+        if keyword_themes:
+            for theme in keyword_themes:
+                keyword_theme_operation = {
+                    "campaignCriterionOperation": {
+                        "create": {
+                            "campaign": f"customers/{formatted_id}/campaigns/-2",
+                            "keywordTheme": {
+                                "freeFormKeywordTheme": theme.strip()
+                            },
+                            "status": "ENABLED"
+                        }
+                    }
+                }
+                operations.append(keyword_theme_operation)
+
+        # 6. Create Ad Group (temporary ID: -3)
+        ad_group_operation = {
+            "adGroupOperation": {
+                "create": {
+                    "resourceName": f"customers/{formatted_id}/adGroups/-3",
+                    "name": f"{campaign_name} Ad Group",
+                    "campaign": f"customers/{formatted_id}/campaigns/-2",
+                    "type": "SMART_CAMPAIGN_ADS",
+                    "status": "ENABLED"
+                }
+            }
+        }
+        operations.append(ad_group_operation)
+
+        # 7. Create Ad Group Ad with headlines and descriptions (if provided)
+        # If not provided, Smart campaign will auto-generate them
+        if headlines and descriptions:
+            headline_list = [h.strip() for h in headlines.split("|") if h.strip()]
+            desc_list = [d.strip() for d in descriptions.split("|") if d.strip()]
+
+            if len(headline_list) < 3:
+                return "Error: Need at least 3 headlines for Smart campaign ad"
+            if len(desc_list) < 2:
+                return "Error: Need at least 2 descriptions for Smart campaign ad"
+
+            headline_assets = [{"text": h} for h in headline_list[:15]]  # Max 15
+            desc_assets = [{"text": d} for d in desc_list[:4]]  # Max 4
+
+            ad_operation = {
+                "adGroupAdOperation": {
+                    "create": {
+                        "adGroup": f"customers/{formatted_id}/adGroups/-3",
+                        "status": "ENABLED",
+                        "ad": {
+                            "smartCampaignAd": {
+                                "headlines": headline_assets,
+                                "descriptions": desc_assets
+                            }
+                        }
+                    }
+                }
+            }
+            operations.append(ad_operation)
+
+        # Execute the mutate request with all operations
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        # Use the GoogleAdsService mutate endpoint for multiple operations
+        url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_id}/googleAds:mutate"
+        payload = {
+            "mutateOperations": operations
+        }
+
+        logger.info(f"Creating Smart campaign '{campaign_name}' with {len(operations)} operations")
+        logger.debug(f"Request URL: {url}")
+        logger.debug(f"Request payload: {json.dumps(payload, indent=2)}")
+
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            error_msg = f"Smart campaign creation failed ({response.status_code}): {response.text}"
+            logger.error(error_msg)
+            return error_msg
+
+        result = response.json()
+        logger.info(f"Smart campaign created successfully: {campaign_name}")
+
+        # Extract campaign resource name from response
+        campaign_resource = None
+        if "mutateOperationResponses" in result:
+            for resp in result["mutateOperationResponses"]:
+                if "campaignResult" in resp:
+                    campaign_resource = resp["campaignResult"]["resourceName"]
+                    break
+
+        success_msg = f"Smart campaign '{campaign_name}' created successfully!\n\n"
+        success_msg += f"Status: PAUSED (enable when ready)\n"
+        success_msg += f"Daily Budget: {budget_amount_micros / 1000000:.2f} (account currency)\n"
+        success_msg += f"Geo Targets: {len(geo_targets)} location(s)\n"
+        success_msg += f"Keyword Themes: {len(keyword_themes)} theme(s)\n"
+        success_msg += f"Phone: +{country_code} {phone_digits}\n"
+        success_msg += f"Language: {language_code}\n"
+        success_msg += f"Business Location: {business_profile_location}\n"
+        if campaign_resource:
+            success_msg += f"\nCampaign Resource: {campaign_resource}\n"
+        success_msg += f"\nFull Response:\n{json.dumps(result, indent=2)}"
+
+        return success_msg
+
+    except Exception as e:
+        error_msg = f"Error creating Smart campaign: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return error_msg
 
 
 if __name__ == "__main__":
