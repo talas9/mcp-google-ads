@@ -2817,6 +2817,643 @@ async def create_smart_campaign(
         return error_msg
 
 
+# =============================================================================
+# CONVERSION TRACKING TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def list_conversion_actions(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes). Example: '3552856345'")
+) -> str:
+    """
+    List all conversion actions in the Google Ads account.
+
+    This tool retrieves all conversion actions configured in your account, including:
+    - Website conversions (page views, form submissions, purchases)
+    - Phone call conversions
+    - App conversions
+    - Import conversions
+    - Store visit conversions
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+
+    Returns:
+        Formatted list of conversion actions with key details
+
+    Example:
+        customer_id: "3552856345"
+    """
+    query = """
+        SELECT
+            conversion_action.id,
+            conversion_action.name,
+            conversion_action.type,
+            conversion_action.status,
+            conversion_action.category,
+            conversion_action.origin,
+            conversion_action.primary_for_goal,
+            conversion_action.click_through_lookback_window_days,
+            conversion_action.view_through_lookback_window_days,
+            conversion_action.value_settings.default_value,
+            conversion_action.value_settings.default_currency_code,
+            conversion_action.value_settings.always_use_default_value,
+            conversion_action.counting_type,
+            conversion_action.attribution_model_settings.attribution_model,
+            conversion_action.include_in_conversions_metric,
+            conversion_action.tag_snippets
+        FROM conversion_action
+        ORDER BY conversion_action.name
+    """
+
+    try:
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        formatted_customer_id = format_customer_id(customer_id)
+        url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_customer_id}/googleAds:search"
+
+        payload = {"query": query}
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            return f"Error listing conversion actions: {response.text}"
+
+        results = response.json()
+        if not results.get('results'):
+            return "No conversion actions found for this account."
+
+        # Format output
+        output_lines = []
+        output_lines.append("=" * 80)
+        output_lines.append(f"CONVERSION ACTIONS ({len(results['results'])} found)")
+        output_lines.append("=" * 80)
+
+        for idx, result in enumerate(results['results'], 1):
+            ca = result.get('conversionAction', {})
+
+            output_lines.append(f"\n[{idx}] {ca.get('name', 'N/A')}")
+            output_lines.append("-" * 80)
+            output_lines.append(f"  ID: {ca.get('id', 'N/A')}")
+            output_lines.append(f"  Type: {ca.get('type', 'N/A')}")
+            output_lines.append(f"  Status: {ca.get('status', 'N/A')}")
+            output_lines.append(f"  Category: {ca.get('category', 'N/A')}")
+            output_lines.append(f"  Origin: {ca.get('origin', 'N/A')}")
+            output_lines.append(f"  Primary for Goal: {ca.get('primaryForGoal', False)}")
+            output_lines.append(f"  Include in 'Conversions': {ca.get('includeInConversionsMetric', False)}")
+            output_lines.append(f"  Counting Type: {ca.get('countingType', 'N/A')}")
+
+            # Value settings
+            value_settings = ca.get('valueSettings', {})
+            if value_settings:
+                output_lines.append(f"  Default Value: {value_settings.get('defaultValue', 0)} {value_settings.get('defaultCurrencyCode', 'N/A')}")
+                output_lines.append(f"  Always Use Default Value: {value_settings.get('alwaysUseDefaultValue', False)}")
+
+            # Lookback windows
+            output_lines.append(f"  Click Lookback Window: {ca.get('clickThroughLookbackWindowDays', 'N/A')} days")
+            output_lines.append(f"  View Lookback Window: {ca.get('viewThroughLookbackWindowDays', 'N/A')} days")
+
+            # Attribution
+            attr_settings = ca.get('attributionModelSettings', {})
+            if attr_settings:
+                output_lines.append(f"  Attribution Model: {attr_settings.get('attributionModel', 'N/A')}")
+
+        return "\n".join(output_lines)
+
+    except Exception as e:
+        return f"Error listing conversion actions: {str(e)}"
+
+
+@mcp.tool()
+async def create_conversion_action(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    name: str = Field(description="Name for the conversion action (must be unique)"),
+    type: str = Field(description="Conversion type: WEBPAGE, PHONE_CALL_LEAD, APP_DEEP_LINK, IMPORT, etc."),
+    category: str = Field(description="Category: PURCHASE, LEAD, SIGNUP, PAGE_VIEW, etc."),
+    status: str = Field(default="ENABLED", description="Status: ENABLED, REMOVED, or HIDDEN"),
+    value: float = Field(default=0.0, description="Default conversion value (0 = no value)"),
+    currency_code: str = Field(default="", description="Currency code (e.g., 'USD', 'AED'). Uses account default if not specified."),
+    always_use_default_value: bool = Field(default=True, description="Always use default value (true) or allow dynamic values (false)"),
+    counting_type: str = Field(default="ONE_PER_CLICK", description="Counting type: ONE_PER_CLICK or MANY_PER_CLICK"),
+    click_lookback_days: int = Field(default=30, description="Click-through lookback window (1-90 days)"),
+    view_lookback_days: int = Field(default=1, description="View-through lookback window (1-30 days)")
+) -> str:
+    """
+    Create a new conversion action in Google Ads.
+
+    This tool creates a conversion action to track conversions on your website,
+    from phone calls, app installs, or other sources.
+
+    IMPORTANT: After creating a WEBPAGE conversion action, use get_conversion_tracking_tag
+    to retrieve the tracking snippet that must be installed on your website.
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        name: Unique name for this conversion action
+        type: Conversion type (WEBPAGE, PHONE_CALL_LEAD, APP_DEEP_LINK, IMPORT)
+        category: Conversion category (PURCHASE, LEAD, SIGNUP, PAGE_VIEW, etc.)
+        status: Initial status (ENABLED, REMOVED, HIDDEN)
+        value: Default conversion value (use 0 for no value tracking)
+        currency_code: Currency code (uses account default if empty)
+        always_use_default_value: If true, always use default value; if false, allow dynamic values
+        counting_type: ONE_PER_CLICK (count once per ad click) or MANY_PER_CLICK (count all)
+        click_lookback_days: Days to attribute conversions after a click (1-90)
+        view_lookback_days: Days to attribute conversions after a view (1-30)
+
+    Returns:
+        Success message with conversion action resource name and ID
+
+    Example:
+        customer_id: "3552856345"
+        name: "Website Purchase"
+        type: "WEBPAGE"
+        category: "PURCHASE"
+        value: 100.0
+        currency_code: "AED"
+    """
+    try:
+        # Get account currency if not specified
+        if not currency_code:
+            currency_code = await get_account_currency(customer_id)
+            if "Error" in currency_code:
+                return f"Error getting account currency: {currency_code}"
+
+        # Build the conversion action object
+        conversion_action = {
+            "name": name,
+            "type": type,
+            "category": category,
+            "status": status,
+            "valueSettings": {
+                "defaultValue": value,
+                "defaultCurrencyCode": currency_code,
+                "alwaysUseDefaultValue": always_use_default_value
+            },
+            "countingType": counting_type,
+            "clickThroughLookbackWindowDays": click_lookback_days,
+            "viewThroughLookbackWindowDays": view_lookback_days,
+            "attributionModelSettings": {
+                "attributionModel": "GOOGLE_ADS_LAST_CLICK"
+            }
+        }
+
+        # Create operation
+        operations = [{
+            "create": conversion_action
+        }]
+
+        # Execute mutate
+        result = _mutate(customer_id, "conversionActions", operations)
+
+        # Extract resource name and ID from response
+        resource_name = result.get('results', [{}])[0].get('resourceName', 'N/A')
+        conversion_id = resource_name.split('/')[-1] if resource_name != 'N/A' else 'N/A'
+
+        success_msg = f"Conversion action '{name}' created successfully!\n\n"
+        success_msg += f"Resource Name: {resource_name}\n"
+        success_msg += f"Conversion ID: {conversion_id}\n"
+        success_msg += f"Type: {type}\n"
+        success_msg += f"Category: {category}\n"
+        success_msg += f"Status: {status}\n"
+        success_msg += f"Default Value: {value} {currency_code}\n"
+        success_msg += f"Counting Type: {counting_type}\n"
+        success_msg += f"Click Lookback: {click_lookback_days} days\n"
+        success_msg += f"View Lookback: {view_lookback_days} days\n"
+
+        if type == "WEBPAGE":
+            success_msg += f"\nNEXT STEP: Use get_conversion_tracking_tag({customer_id}, {conversion_id}) to get the tracking snippet.\n"
+
+        success_msg += f"\nFull Response:\n{json.dumps(result, indent=2)}"
+
+        return success_msg
+
+    except Exception as e:
+        return f"Error creating conversion action: {str(e)}"
+
+
+@mcp.tool()
+async def update_conversion_action(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    conversion_action_id: str = Field(description="Conversion action ID to update"),
+    status: str = Field(default="", description="New status: ENABLED, REMOVED, or HIDDEN (leave empty to keep current)"),
+    value: float = Field(default=-1, description="New default value (leave -1 to keep current)"),
+    counting_type: str = Field(default="", description="New counting type: ONE_PER_CLICK or MANY_PER_CLICK (leave empty to keep current)"),
+    click_lookback_days: int = Field(default=-1, description="New click lookback days 1-90 (leave -1 to keep current)"),
+    view_lookback_days: int = Field(default=-1, description="New view lookback days 1-30 (leave -1 to keep current)")
+) -> str:
+    """
+    Update an existing conversion action.
+
+    This tool updates the settings of an existing conversion action. Only the fields
+    you specify will be updated; others remain unchanged.
+
+    NOTE: The 'type' field cannot be changed after creation.
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        conversion_action_id: ID of the conversion action to update
+        status: New status (leave empty to keep current)
+        value: New default value (leave -1 to keep current)
+        counting_type: New counting type (leave empty to keep current)
+        click_lookback_days: New click lookback window (leave -1 to keep current)
+        view_lookback_days: New view lookback window (leave -1 to keep current)
+
+    Returns:
+        Success or error message
+
+    Example:
+        customer_id: "3552856345"
+        conversion_action_id: "123456789"
+        status: "ENABLED"
+        value: 150.0
+    """
+    try:
+        formatted_id = format_customer_id(customer_id)
+        resource_name = f"customers/{formatted_id}/conversionActions/{conversion_action_id}"
+
+        # Build update object with only specified fields
+        update = {
+            "resourceName": resource_name
+        }
+
+        update_mask = []
+
+        if status:
+            update["status"] = status
+            update_mask.append("status")
+
+        if value >= 0:
+            if "valueSettings" not in update:
+                update["valueSettings"] = {}
+            update["valueSettings"]["defaultValue"] = value
+            update_mask.append("value_settings.default_value")
+
+        if counting_type:
+            update["countingType"] = counting_type
+            update_mask.append("counting_type")
+
+        if click_lookback_days > 0:
+            update["clickThroughLookbackWindowDays"] = click_lookback_days
+            update_mask.append("click_through_lookback_window_days")
+
+        if view_lookback_days > 0:
+            update["viewThroughLookbackWindowDays"] = view_lookback_days
+            update_mask.append("view_through_lookback_window_days")
+
+        if not update_mask:
+            return "No fields to update. Please specify at least one field to change."
+
+        # Create operation
+        operations = [{
+            "update": update,
+            "updateMask": ",".join(update_mask)
+        }]
+
+        # Execute mutate
+        result = _mutate(customer_id, "conversionActions", operations)
+
+        return f"Conversion action {conversion_action_id} updated successfully.\nUpdated fields: {', '.join(update_mask)}\n\nResponse: {json.dumps(result, indent=2)}"
+
+    except Exception as e:
+        return f"Error updating conversion action: {str(e)}"
+
+
+@mcp.tool()
+async def get_conversion_tracking_tag(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    conversion_action_id: str = Field(description="Conversion action ID to get tracking tag for")
+) -> str:
+    """
+    Get the conversion tracking tag snippet for a website conversion action.
+
+    This tool retrieves the tracking code that must be installed on your website
+    to track conversions. The response includes:
+    - Global site tag (gtag.js) - Install on every page
+    - Event snippet - Install on conversion pages (e.g., checkout confirmation)
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        conversion_action_id: ID of the WEBPAGE conversion action
+
+    Returns:
+        Tracking tag snippets with installation instructions
+
+    Example:
+        customer_id: "3552856345"
+        conversion_action_id: "123456789"
+    """
+    query = f"""
+        SELECT
+            conversion_action.id,
+            conversion_action.name,
+            conversion_action.type,
+            conversion_action.tag_snippets
+        FROM conversion_action
+        WHERE conversion_action.id = {conversion_action_id}
+    """
+
+    try:
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        formatted_customer_id = format_customer_id(customer_id)
+        url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_customer_id}/googleAds:search"
+
+        payload = {"query": query}
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            return f"Error retrieving conversion tracking tag: {response.text}"
+
+        results = response.json()
+        if not results.get('results'):
+            return f"No conversion action found with ID {conversion_action_id}"
+
+        ca = results['results'][0].get('conversionAction', {})
+        tag_snippets = ca.get('tagSnippets', [])
+
+        if not tag_snippets:
+            return f"No tracking tags available for this conversion action. This may not be a WEBPAGE conversion type."
+
+        # Format output
+        output_lines = []
+        output_lines.append("=" * 80)
+        output_lines.append(f"CONVERSION TRACKING TAG: {ca.get('name', 'N/A')}")
+        output_lines.append("=" * 80)
+        output_lines.append(f"Conversion ID: {ca.get('id', 'N/A')}")
+        output_lines.append(f"Type: {ca.get('type', 'N/A')}")
+        output_lines.append("")
+
+        for snippet in tag_snippets:
+            snippet_type = snippet.get('type', 'UNKNOWN')
+            page_format = snippet.get('pageFormat', 'HTML')
+
+            output_lines.append("-" * 80)
+            output_lines.append(f"TAG TYPE: {snippet_type}")
+            output_lines.append(f"Format: {page_format}")
+            output_lines.append("-" * 80)
+
+            if snippet_type == "GLOBAL_SITE_TAG":
+                output_lines.append("INSTALLATION: Add this to the <head> section of EVERY page on your website")
+            elif snippet_type == "EVENT_SNIPPET":
+                output_lines.append("INSTALLATION: Add this to conversion pages (e.g., checkout confirmation, thank you page)")
+
+            output_lines.append("")
+            output_lines.append(snippet.get('snippet', 'No snippet available'))
+            output_lines.append("")
+
+        output_lines.append("=" * 80)
+        output_lines.append("IMPORTANT NOTES:")
+        output_lines.append("1. Install the GLOBAL_SITE_TAG on every page of your website")
+        output_lines.append("2. Install the EVENT_SNIPPET only on conversion pages")
+        output_lines.append("3. Test your implementation using Google Tag Assistant")
+        output_lines.append("4. It may take 24-48 hours for conversions to start appearing")
+        output_lines.append("=" * 80)
+
+        return "\n".join(output_lines)
+
+    except Exception as e:
+        return f"Error retrieving conversion tracking tag: {str(e)}"
+
+
+@mcp.tool()
+async def upload_offline_conversions(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    conversion_action_id: str = Field(description="Conversion action ID for the offline conversion"),
+    conversions_json: str = Field(description="JSON array of conversion objects with gclid, conversionDateTime, conversionValue, currencyCode")
+) -> str:
+    """
+    Upload offline conversions (click conversions) to Google Ads.
+
+    Use this to import conversions that happened offline (e.g., phone sales, in-store purchases)
+    but were initiated by a Google Ads click.
+
+    REQUIREMENTS:
+    - You must have the GCLID (Google Click ID) from the ad click
+    - The click must be within the conversion action's lookback window
+    - Conversion date/time must be in "yyyy-MM-dd HH:mm:ss±hh:mm" format (ISO 8601)
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        conversion_action_id: ID of the conversion action to attribute to
+        conversions_json: JSON array of conversions, each with:
+            - gclid: Google Click ID (required)
+            - conversionDateTime: ISO 8601 timestamp (required)
+            - conversionValue: Conversion value (optional)
+            - currencyCode: Currency code (optional, uses account default)
+
+    Returns:
+        Upload status and results
+
+    Example conversions_json:
+        [
+            {
+                "gclid": "CjwKCAiA...",
+                "conversionDateTime": "2026-02-10 14:30:00+00:00",
+                "conversionValue": 150.0,
+                "currencyCode": "AED"
+            }
+        ]
+
+    Example:
+        customer_id: "3552856345"
+        conversion_action_id: "123456789"
+        conversions_json: '[{"gclid": "abc123", "conversionDateTime": "2026-02-10 14:30:00+00:00", "conversionValue": 100}]'
+    """
+    try:
+        # Parse conversions JSON
+        try:
+            conversions_list = json.loads(conversions_json)
+        except json.JSONDecodeError as e:
+            return f"Error parsing conversions_json: {str(e)}"
+
+        if not isinstance(conversions_list, list):
+            return "conversions_json must be a JSON array"
+
+        if not conversions_list:
+            return "conversions_json array is empty"
+
+        # Build conversion action resource name
+        formatted_id = format_customer_id(customer_id)
+        conversion_action_resource = f"customers/{formatted_id}/conversionActions/{conversion_action_id}"
+
+        # Build click conversions
+        click_conversions = []
+        for conv in conversions_list:
+            click_conversion = {
+                "gclid": conv.get("gclid"),
+                "conversionAction": conversion_action_resource,
+                "conversionDateTime": conv.get("conversionDateTime")
+            }
+
+            if "conversionValue" in conv:
+                click_conversion["conversionValue"] = conv["conversionValue"]
+
+            if "currencyCode" in conv:
+                click_conversion["currencyCode"] = conv["currencyCode"]
+
+            click_conversions.append(click_conversion)
+
+        # Call uploadClickConversions endpoint
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_id}:uploadClickConversions"
+
+        payload = {
+            "conversions": click_conversions,
+            "partialFailure": True  # Continue processing even if some conversions fail
+        }
+
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            return f"Error uploading offline conversions: {response.text}"
+
+        result = response.json()
+
+        # Format output
+        output_lines = []
+        output_lines.append("=" * 80)
+        output_lines.append(f"OFFLINE CONVERSION UPLOAD RESULTS")
+        output_lines.append("=" * 80)
+        output_lines.append(f"Total conversions submitted: {len(click_conversions)}")
+
+        # Check for partial failure
+        partial_failure_error = result.get('partialFailureError')
+        if partial_failure_error:
+            output_lines.append("\nWARNING: Some conversions failed to upload")
+            output_lines.append(f"Partial failure details: {json.dumps(partial_failure_error, indent=2)}")
+
+        # Show results
+        results = result.get('results', [])
+        output_lines.append(f"\nSuccessfully uploaded: {len(results)} conversion(s)")
+
+        for idx, res in enumerate(results, 1):
+            output_lines.append(f"  [{idx}] Conversion DateTime: {res.get('conversionDateTime', 'N/A')}")
+
+        output_lines.append("\n" + "=" * 80)
+        output_lines.append("Full Response:")
+        output_lines.append(json.dumps(result, indent=2))
+
+        return "\n".join(output_lines)
+
+    except Exception as e:
+        return f"Error uploading offline conversions: {str(e)}"
+
+
+@mcp.tool()
+async def get_conversion_performance(
+    customer_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    days: int = Field(default=30, description="Number of days to look back (7, 30, 90, etc.)")
+) -> str:
+    """
+    Get conversion performance metrics for all conversion actions.
+
+    This tool shows how each conversion action is performing with metrics like:
+    - Number of conversions
+    - Conversion value
+    - Cost per conversion
+    - Conversion rate
+
+    RECOMMENDED WORKFLOW:
+    1. First run list_accounts() to get available account IDs
+    2. Then run get_account_currency() to see what currency the account uses
+    3. Finally run this command to get conversion performance
+
+    Args:
+        customer_id: Google Ads customer ID (10 digits, no dashes)
+        days: Number of days to look back (default: 30)
+
+    Returns:
+        Formatted table of conversion performance by conversion action
+
+    Example:
+        customer_id: "3552856345"
+        days: 30
+    """
+    query = f"""
+        SELECT
+            segments.conversion_action_name,
+            segments.conversion_action,
+            segments.conversion_action_category,
+            metrics.conversions,
+            metrics.conversions_value,
+            metrics.all_conversions,
+            metrics.all_conversions_value,
+            metrics.cost_micros,
+            metrics.clicks,
+            metrics.interactions
+        FROM customer
+        WHERE segments.date DURING LAST_{days}_DAYS
+            AND metrics.conversions > 0
+        ORDER BY metrics.conversions DESC
+    """
+
+    try:
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        formatted_customer_id = format_customer_id(customer_id)
+        url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_customer_id}/googleAds:search"
+
+        payload = {"query": query}
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            return f"Error retrieving conversion performance: {response.text}"
+
+        results = response.json()
+        if not results.get('results'):
+            return f"No conversion data found for the last {days} days."
+
+        # Format output
+        output_lines = []
+        output_lines.append("=" * 80)
+        output_lines.append(f"CONVERSION PERFORMANCE - Last {days} Days")
+        output_lines.append("=" * 80)
+        output_lines.append("")
+
+        for idx, result in enumerate(results['results'], 1):
+            segments = result.get('segments', {})
+            metrics = result.get('metrics', {})
+
+            conversions = float(metrics.get('conversions', 0))
+            conversions_value = float(metrics.get('conversionsValue', 0))
+            all_conversions = float(metrics.get('allConversions', 0))
+            all_conversions_value = float(metrics.get('allConversionsValue', 0))
+            cost_micros = int(metrics.get('costMicros', 0))
+            clicks = int(metrics.get('clicks', 0))
+            interactions = int(metrics.get('interactions', 0))
+
+            cost = cost_micros / 1_000_000
+            cost_per_conversion = cost / conversions if conversions > 0 else 0
+            conversion_rate = (conversions / clicks * 100) if clicks > 0 else 0
+
+            output_lines.append(f"[{idx}] {segments.get('conversionActionName', 'N/A')}")
+            output_lines.append("-" * 80)
+            output_lines.append(f"  Category: {segments.get('conversionActionCategory', 'N/A')}")
+            output_lines.append(f"  Conversions: {conversions:.2f}")
+            output_lines.append(f"  Conversion Value: {conversions_value:.2f}")
+            output_lines.append(f"  All Conversions: {all_conversions:.2f}")
+            output_lines.append(f"  All Conversions Value: {all_conversions_value:.2f}")
+            output_lines.append(f"  Cost: {cost:.2f} (micros: {cost_micros})")
+            output_lines.append(f"  Cost per Conversion: {cost_per_conversion:.2f}")
+            output_lines.append(f"  Clicks: {clicks}")
+            output_lines.append(f"  Conversion Rate: {conversion_rate:.2f}%")
+            output_lines.append("")
+
+        output_lines.append("=" * 80)
+        output_lines.append("NOTE: Cost values are in the account's default currency.")
+        output_lines.append("Use get_account_currency() to see which currency this account uses.")
+        output_lines.append("=" * 80)
+
+        return "\n".join(output_lines)
+
+    except Exception as e:
+        return f"Error retrieving conversion performance: {str(e)}"
+
+
 if __name__ == "__main__":
     # Start the MCP server on stdio transport
     mcp.run(transport="stdio")
