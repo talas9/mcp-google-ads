@@ -2664,7 +2664,8 @@ async def create_smart_campaign(
                     "status": "PAUSED",  # Start paused for review
                     "advertisingChannelType": "SMART",
                     "advertisingChannelSubType": "SMART_CAMPAIGN",
-                    "campaignBudget": f"customers/{formatted_id}/campaignBudgets/-1"
+                    "campaignBudget": f"customers/{formatted_id}/campaignBudgets/-1",
+                    "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
                 }
             }
         }
@@ -2684,7 +2685,7 @@ async def create_smart_campaign(
                     "advertisingLanguageCode": language_code,
                     "businessProfileLocation": business_profile_location
                 },
-                "updateMask": "phoneNumber,finalUrl,advertisingLanguageCode,businessProfileLocation"
+                "updateMask": "phone_number.country_code,phone_number.phone_number,final_url,advertising_language_code,business_profile_location"
             }
         }
         operations.append(smart_setting_operation)
