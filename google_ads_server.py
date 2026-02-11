@@ -1889,6 +1889,181 @@ async def generic_mutate(
         return f"Error executing mutate: {str(e)}"
 
 
+# =============================================================================
+# GOOGLE BUSINESS PROFILE TOOLS
+# =============================================================================
+
+GBP_ACCOUNT_MGMT_BASE = "https://mybusinessaccountmanagement.googleapis.com/v1"
+GBP_BUSINESS_INFO_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
+
+def _gbp_headers():
+    """Get headers for Google Business Profile API requests."""
+    creds = get_credentials()
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            raise ValueError("GBP credentials are invalid")
+    return {
+        'Authorization': f'Bearer {creds.token}',
+        'content-type': 'application/json'
+    }
+
+
+@mcp.tool()
+async def list_gbp_accounts() -> str:
+    """
+    List all Google Business Profile accounts accessible with current credentials.
+
+    Returns:
+        Formatted list of GBP accounts with their IDs and names
+    """
+    try:
+        headers = _gbp_headers()
+        url = f"{GBP_ACCOUNT_MGMT_BASE}/accounts"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return f"Error listing GBP accounts: {response.text}"
+        data = response.json()
+        accounts = data.get('accounts', [])
+        if not accounts:
+            return "No Google Business Profile accounts found."
+        lines = ["Google Business Profile Accounts:", "=" * 60]
+        for acc in accounts:
+            lines.append(f"  Name: {acc.get('name', 'N/A')}")
+            lines.append(f"  Account Name: {acc.get('accountName', 'N/A')}")
+            lines.append(f"  Type: {acc.get('type', 'N/A')}")
+            lines.append(f"  Role: {acc.get('role', 'N/A')}")
+            lines.append(f"  Verification State: {acc.get('verificationState', 'N/A')}")
+            lines.append("-" * 60)
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing GBP accounts: {str(e)}"
+
+
+@mcp.tool()
+async def list_gbp_locations(
+    account_id: str = Field(description="GBP account ID (from list_gbp_accounts, e.g. 'accounts/123456789'). Pass just the number or the full path."),
+    read_mask: str = Field(default="name,title,storefrontAddress,phoneNumbers,websiteUri,regularHours,storeCode,labels", description="Comma-separated fields to return")
+) -> str:
+    """
+    List all business locations in a Google Business Profile account.
+
+    Args:
+        account_id: The GBP account ID
+        read_mask: Fields to include in the response
+
+    Returns:
+        Formatted list of locations with address, phone, hours, etc.
+    """
+    try:
+        headers = _gbp_headers()
+        acct = account_id if account_id.startswith("accounts/") else f"accounts/{account_id}"
+        url = f"{GBP_BUSINESS_INFO_BASE}/{acct}/locations?readMask={read_mask}"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return f"Error listing locations: {response.text}"
+        data = response.json()
+        locations = data.get('locations', [])
+        if not locations:
+            return "No locations found for this account."
+        lines = [f"Locations for {acct}:", "=" * 80]
+        for loc in locations:
+            lines.append(f"\n  Resource: {loc.get('name', 'N/A')}")
+            lines.append(f"  Title: {loc.get('title', 'N/A')}")
+            lines.append(f"  Store Code: {loc.get('storeCode', 'N/A')}")
+            lines.append(f"  Labels: {', '.join(loc.get('labels', [])) or 'None'}")
+            addr = loc.get('storefrontAddress', {})
+            if addr:
+                addr_lines = addr.get('addressLines', [])
+                lines.append(f"  Address: {', '.join(addr_lines)}")
+                lines.append(f"  City: {addr.get('locality', 'N/A')}")
+                lines.append(f"  Region: {addr.get('administrativeArea', 'N/A')}")
+                lines.append(f"  Country: {addr.get('regionCode', 'N/A')}")
+                lines.append(f"  Postal Code: {addr.get('postalCode', 'N/A')}")
+            phone = loc.get('phoneNumbers', {})
+            if phone:
+                lines.append(f"  Primary Phone: {phone.get('primaryPhone', 'N/A')}")
+                additional = phone.get('additionalPhones', [])
+                if additional:
+                    lines.append(f"  Additional Phones: {', '.join(additional)}")
+            lines.append(f"  Website: {loc.get('websiteUri', 'N/A')}")
+            hours = loc.get('regularHours', {})
+            if hours and hours.get('periods'):
+                lines.append("  Hours:")
+                for period in hours['periods']:
+                    open_day = period.get('openDay', '')
+                    open_time = period.get('openTime', {})
+                    close_day = period.get('closeDay', '')
+                    close_time = period.get('closeTime', {})
+                    oh = f"{open_time.get('hours', 0):02d}:{open_time.get('minutes', 0):02d}"
+                    ch = f"{close_time.get('hours', 0):02d}:{close_time.get('minutes', 0):02d}"
+                    lines.append(f"    {open_day}: {oh} - {ch}")
+            lines.append("-" * 80)
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing locations: {str(e)}"
+
+
+@mcp.tool()
+async def get_gbp_location(
+    location_name: str = Field(description="Full location resource name (e.g. 'locations/123456789')"),
+    read_mask: str = Field(default="name,title,storefrontAddress,phoneNumbers,websiteUri,regularHours,storeCode,labels,metadata,profile,serviceArea", description="Comma-separated fields to return")
+) -> str:
+    """
+    Get detailed information about a specific business location.
+
+    Args:
+        location_name: The full location resource name
+        read_mask: Fields to include in the response
+
+    Returns:
+        Detailed location information
+    """
+    try:
+        headers = _gbp_headers()
+        loc = location_name if location_name.startswith("locations/") else f"locations/{location_name}"
+        url = f"{GBP_BUSINESS_INFO_BASE}/{loc}?readMask={read_mask}"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return f"Error getting location: {response.text}"
+        return json.dumps(response.json(), indent=2)
+    except Exception as e:
+        return f"Error getting location: {str(e)}"
+
+
+@mcp.tool()
+async def update_gbp_location(
+    location_name: str = Field(description="Full location resource name (e.g. 'locations/123456789')"),
+    update_mask: str = Field(description="Comma-separated fields to update (e.g. 'title,phoneNumbers,regularHours')"),
+    update_body: str = Field(description="JSON string of the fields to update")
+) -> str:
+    """
+    Update a business location's information (address, hours, phone, etc.).
+
+    Args:
+        location_name: The full location resource name
+        update_mask: Which fields to update
+        update_body: JSON string with the updated field values
+
+    Returns:
+        Updated location data or error message
+    """
+    try:
+        headers = _gbp_headers()
+        loc = location_name if location_name.startswith("locations/") else f"locations/{location_name}"
+        url = f"{GBP_BUSINESS_INFO_BASE}/{loc}?updateMask={update_mask}"
+        body = json.loads(update_body)
+        response = requests.patch(url, headers=headers, json=body)
+        if response.status_code != 200:
+            return f"Error updating location: {response.text}"
+        return f"Location updated successfully. Response: {json.dumps(response.json(), indent=2)}"
+    except json.JSONDecodeError as e:
+        return f"Error parsing update body JSON: {str(e)}"
+    except Exception as e:
+        return f"Error updating location: {str(e)}"
+
+
 if __name__ == "__main__":
     # Start the MCP server on stdio transport
     mcp.run(transport="stdio")
