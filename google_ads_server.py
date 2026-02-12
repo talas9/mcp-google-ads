@@ -33,7 +33,7 @@ mcp = FastMCP(
 
 # Constants and configuration
 SCOPES = ['https://www.googleapis.com/auth/adwords']
-API_VERSION = "v19"  # Google Ads API version
+API_VERSION = "v20"  # Google Ads API version (v19 deprecated)
 
 # Load environment variables
 try:
@@ -2665,6 +2665,7 @@ async def create_smart_campaign(
                     "advertisingChannelType": "SMART",
                     "advertisingChannelSubType": "SMART_CAMPAIGN",
                     "campaignBudget": f"customers/{formatted_id}/campaignBudgets/-1",
+                    "biddingStrategyType": "TARGET_SPEND",  # Required for Smart campaigns
                     "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"
                 }
             }
