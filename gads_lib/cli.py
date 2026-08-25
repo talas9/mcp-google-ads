@@ -470,7 +470,10 @@ def auth_setup():
 @auth.command("login")
 @click.option("--port", type=int, default=9090, help="Local OAuth callback port.")
 @click.option("--force", is_flag=True, help="Re-authenticate even if token exists.")
-def auth_login(port, force):
+@click.option("--allow-partial", is_flag=True,
+              help="Replace the token even if scopes are missing or lost. "
+                   "DESTRUCTIVE — only for deliberate downgrades.")
+def auth_login(port, force, allow_partial):
     """Authenticate with Google (OAuth browser flow)."""
     client_secret = CREDS_PATH.parent / "client_secret.json"
 
@@ -489,7 +492,7 @@ def auth_login(port, force):
         click.echo(f"  Token: {CREDS_PATH}")
         return
 
-    _do_oauth_login(client_secret, CREDS_PATH, port=port)
+    _do_oauth_login(client_secret, CREDS_PATH, port=port, allow_partial=allow_partial)
 
 
 @auth.command("revoke")
@@ -642,7 +645,7 @@ def _append_env(env_path, key, value):
         f.writelines(lines)
 
 
-def _do_oauth_login(client_secret_path, token_output_path, port=9090):
+def _do_oauth_login(client_secret_path, token_output_path, port=9090, allow_partial=False):
     """Run the OAuth browser flow and save the token."""
     from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -654,7 +657,43 @@ def _do_oauth_login(client_secret_path, token_output_path, port=9090):
         "https://www.googleapis.com/auth/webmasters.readonly",
     ]
 
+    import json as _json
+
+    scope_names = {
+        "https://www.googleapis.com/auth/adwords": "Google Ads",
+        "https://www.googleapis.com/auth/business.manage": "Business Profile",
+        "https://www.googleapis.com/auth/content": "Merchant Center",
+        "https://www.googleapis.com/auth/analytics.readonly": "GA4 Analytics",
+        "https://www.googleapis.com/auth/analytics.edit": "GA4 Analytics (edit)",
+        "https://www.googleapis.com/auth/webmasters.readonly": "Search Console",
+    }
+
     token_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── read what we already hold, BEFORE touching anything ──────────────────
+    # Re-authentication used to be destructive: the new token was written first
+    # and its scopes checked afterwards, with a missing scope only printed in red.
+    # A partially-granted consent therefore silently destroyed working access.
+    # That is a real risk now that Google gates the `adwords` scope behind a
+    # passkey (rolled out 2026-08-05) whose trust can lag ~7 days -- a user with a
+    # perfectly good pre-existing token could re-auth, fail to get `adwords`, and
+    # be left unable to reach Google Ads at all.
+    prior_scopes, prior_refresh = set(), None
+    if token_output_path.exists():
+        try:
+            _prior = _json.loads(token_output_path.read_text())
+            prior_scopes = set(_prior.get("scopes") or [])
+            prior_refresh = _prior.get("refresh_token")
+        except Exception:
+            click.secho("  ! existing token is unreadable; treating as absent", fg="yellow")
+
+    backup_path = None
+    if token_output_path.exists():
+        from datetime import datetime as _dt
+        backup_path = token_output_path.with_suffix(
+            token_output_path.suffix + f".bak.{_dt.now():%Y%m%d_%H%M%S}")
+        shutil.copy2(token_output_path, backup_path)
+        click.secho(f"  ✓ existing token backed up → {backup_path.name}", fg="cyan")
 
     flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), SCOPES)
 
@@ -663,31 +702,60 @@ def _do_oauth_login(client_secret_path, token_output_path, port=9090):
         creds = flow.run_local_server(port=port, prompt="consent", access_type="offline")
     except Exception as e:
         click.secho(f"\n  ✗ OAuth flow failed: {e}", fg="red", err=True)
-        click.echo("  Make sure no other process is using port {port}.")
+        click.echo(f"  Make sure no other process is using port {port}.")
         click.echo("  You can also try: gads auth login --port 8888")
+        click.secho("  Your existing token was NOT modified.", fg="green")
         raise SystemExit(1)
 
-    with open(token_output_path, "w") as f:
-        f.write(creds.to_json())
-
-    click.secho(f"  ✓ Token saved to {token_output_path}", fg="green")
-
-    # Verify scopes
-    granted = sorted(list(creds.scopes or []))
-    scope_names = {
-        "https://www.googleapis.com/auth/adwords": "Google Ads",
-        "https://www.googleapis.com/auth/business.manage": "Business Profile",
-        "https://www.googleapis.com/auth/content": "Merchant Center",
-        "https://www.googleapis.com/auth/analytics.readonly": "GA4 Analytics",
-        "https://www.googleapis.com/auth/webmasters.readonly": "Search Console",
-    }
+    # ── validate BEFORE committing ───────────────────────────────────────────
+    granted = set(creds.scopes or [])
     click.echo("  Scopes granted:")
     for scope in SCOPES:
         name = scope_names.get(scope, scope)
-        if scope in granted:
-            click.secho(f"    ✓ {name}", fg="green")
-        else:
-            click.secho(f"    ✗ {name} — not granted", fg="red")
+        mark, colour = ("✓", "green") if scope in granted else ("✗", "red")
+        click.secho(f"    {mark} {name}", fg=colour)
+
+    missing = [s for s in SCOPES if s not in granted]
+    regressed = sorted(prior_scopes - granted)
+    problems = []
+    if missing:
+        problems.append(f"{len(missing)} requested scope(s) not granted")
+    if regressed:
+        problems.append(f"{len(regressed)} scope(s) LOST vs the existing token")
+    if not creds.refresh_token:
+        problems.append("no refresh_token issued (offline access not granted)")
+
+    if problems and not allow_partial:
+        click.secho("\n  ✗ REFUSING TO REPLACE THE EXISTING TOKEN", fg="red", bold=True)
+        for p in problems:
+            click.secho(f"      - {p}", fg="red")
+        for s in regressed:
+            click.secho(f"      lost: {scope_names.get(s, s)}", fg="red")
+        rejected = token_output_path.with_suffix(token_output_path.suffix + ".rejected")
+        rejected.write_text(creds.to_json())
+        click.secho(f"\n  Your working token is untouched: {token_output_path}", fg="green")
+        click.echo(f"  The rejected token was saved for inspection: {rejected.name}")
+        if regressed:
+            click.echo("\n  A scope going backwards usually means consent was only")
+            click.echo("  partially approved. Since 2026-08-05 Google requires a passkey")
+            click.echo("  to authorise the Google Ads (adwords) scope, and a new passkey")
+            click.echo("  can take ~7 days to become trusted. Existing refresh tokens keep")
+            click.echo("  working throughout — so doing nothing is usually correct.")
+        click.echo("\n  To override deliberately: gads auth login --force --allow-partial")
+        raise SystemExit(1)
+
+    if problems and allow_partial:
+        click.secho("\n  ! --allow-partial: replacing despite " + "; ".join(problems),
+                    fg="yellow", bold=True)
+
+    # ── commit atomically ────────────────────────────────────────────────────
+    tmp = token_output_path.with_suffix(token_output_path.suffix + ".tmp")
+    tmp.write_text(creds.to_json())
+    tmp.replace(token_output_path)
+    click.secho(f"  ✓ Token saved to {token_output_path}", fg="green")
+    if prior_refresh and creds.refresh_token != prior_refresh:
+        click.secho("  note: refresh_token was rotated; the old one is in the backup",
+                    fg="cyan")
 
 
 def _finish_setup():
