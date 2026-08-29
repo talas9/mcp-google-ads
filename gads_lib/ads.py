@@ -111,6 +111,48 @@ def run_gaql(creds, query):
     return results
 
 
+# ── Campaign bidding target extraction ────────────────────────
+# KB: kb/google-ads.md § DG-2 (Bidding Strategy Types)
+#
+# A campaign's target CPA/ROAS can live in different sub-messages depending
+# on its bidding strategy: TARGET_CPA/TARGET_ROAS carry theirs directly, but
+# MAXIMIZE_CONVERSIONS/MAXIMIZE_CONVERSION_VALUE also carry an OPTIONAL
+# target under maximize_conversions/maximize_conversion_value instead (used
+# to constrain spend/value rather than define it). Checking only
+# targetCpa/targetRoas misses every MAXIMIZE_CONVERSIONS(_VALUE) campaign
+# with a target set -- which was silently misreporting "no target" as a
+# real AED 3.84 tCPA on a live campaign (talas-ads 2026-08-29 incident).
+# Both helpers return None (not 0) when neither sub-message has the field,
+# so "no target set" is never confused with "target is zero" -- callers
+# must render None as "none"/an em dash, not "0.00".
+def extract_target_cpa(camp):
+    """Extract a campaign's target CPA in account currency, or None if unset.
+
+    `camp` is the `campaign` object from a GAQL row requesting
+    campaign.target_cpa.target_cpa_micros AND
+    campaign.maximize_conversions.target_cpa_micros.
+    """
+    for key in ("targetCpa", "maximizeConversions"):
+        val = camp.get(key, {}).get("targetCpaMicros")
+        if val is not None:
+            return int(val) / 1_000_000
+    return None
+
+
+def extract_target_roas(camp):
+    """Extract a campaign's target ROAS, or None if unset.
+
+    `camp` is the `campaign` object from a GAQL row requesting
+    campaign.target_roas.target_roas AND
+    campaign.maximize_conversion_value.target_roas.
+    """
+    for key in ("targetRoas", "maximizeConversionValue"):
+        val = camp.get(key, {}).get("targetRoas")
+        if val is not None:
+            return float(val)
+    return None
+
+
 # KB: kb/google-ads.md § search | https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/customers/search
 def ads_search(creds, query):
     """Execute a GAQL query via the REST search endpoint (paginated).

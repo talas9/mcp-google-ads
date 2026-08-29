@@ -581,6 +581,61 @@ class TestSanitizeKeyword:
         assert sanitize_keyword("tesla parts uae") == "tesla parts uae"
 
 
+class TestExtractTargetCpaRoas:
+    """extract_target_cpa/extract_target_roas -- MAXIMIZE_CONVERSIONS(_VALUE)
+    carries its optional target in a different sub-message than
+    TARGET_CPA/TARGET_ROAS. Checking only the latter silently reports a real
+    target as "no target" (talas-ads 2026-08-29 incident: a live AED 3.84
+    MAXIMIZE_CONVERSIONS tCPA read back as 0.0)."""
+
+    def test_target_cpa_direct(self):
+        from gads_lib.ads import extract_target_cpa
+
+        camp = {"targetCpa": {"targetCpaMicros": "3840000"}}
+        assert extract_target_cpa(camp) == 3.84
+
+    def test_target_cpa_from_maximize_conversions(self):
+        from gads_lib.ads import extract_target_cpa
+
+        camp = {"biddingStrategyType": "MAXIMIZE_CONVERSIONS",
+                "maximizeConversions": {"targetCpaMicros": "640625"}}
+        assert extract_target_cpa(camp) == 0.640625
+
+    def test_target_cpa_none_when_absent(self):
+        """TARGET_SPEND (and any strategy with no target set) has neither
+        sub-message -- must return None, not 0."""
+        from gads_lib.ads import extract_target_cpa
+
+        camp = {"biddingStrategyType": "TARGET_SPEND"}
+        assert extract_target_cpa(camp) is None
+
+    def test_target_cpa_none_when_maximize_conversions_has_no_target(self):
+        """MAXIMIZE_CONVERSIONS with the sub-message present but no target
+        set (spend-maximizing, unconstrained) -- still None, not 0."""
+        from gads_lib.ads import extract_target_cpa
+
+        camp = {"biddingStrategyType": "MAXIMIZE_CONVERSIONS", "maximizeConversions": {}}
+        assert extract_target_cpa(camp) is None
+
+    def test_target_roas_direct(self):
+        from gads_lib.ads import extract_target_roas
+
+        camp = {"targetRoas": {"targetRoas": 3.5}}
+        assert extract_target_roas(camp) == 3.5
+
+    def test_target_roas_from_maximize_conversion_value(self):
+        from gads_lib.ads import extract_target_roas
+
+        camp = {"biddingStrategyType": "MAXIMIZE_CONVERSION_VALUE",
+                "maximizeConversionValue": {"targetRoas": 4.2}}
+        assert extract_target_roas(camp) == 4.2
+
+    def test_target_roas_none_when_absent(self):
+        from gads_lib.ads import extract_target_roas
+
+        assert extract_target_roas({"biddingStrategyType": "TARGET_SPEND"}) is None
+
+
 class TestNormalizePhone:
     """Bonus — _normalize_phone converts UAE numbers to E.164."""
 
@@ -1980,6 +2035,132 @@ class TestGbpDeleteReply:
         called_url = mock_req.call_args[0][1]
         assert review_name in called_url
         assert "reply" in called_url
+
+
+class TestGbpListReviews:
+    """gbp_list_reviews — account-path qualification + full pagination accumulation."""
+
+    def test_bare_location_gets_account_prefixed(self, fake_creds):
+        """A bare 'locations/X' name must be auto-prefixed with the resolved GBP account."""
+        import gads_lib.gbp as gbp_mod
+        gbp_mod._resolved_account_cache["name"] = None
+
+        accounts_body = {"accounts": [{"name": "accounts/999", "type": "LOCATION_GROUP"}]}
+        accounts_resp = MagicMock()
+        accounts_resp.status_code = 200
+        accounts_resp.text = json.dumps(accounts_body)
+        accounts_resp.json.return_value = accounts_body
+
+        reviews_body = {"reviews": [], "averageRating": 0, "totalReviewCount": 0}
+        reviews_resp = MagicMock()
+        reviews_resp.status_code = 200
+        reviews_resp.text = json.dumps(reviews_body)
+        reviews_resp.json.return_value = reviews_body
+
+        with patch("requests.request", side_effect=[accounts_resp, reviews_resp]) as mock_req:
+            gbp_mod.gbp_list_reviews(fake_creds, "locations/123")
+
+        called_url = mock_req.call_args_list[-1][0][1]
+        assert called_url.startswith(
+            "https://mybusiness.googleapis.com/v4/accounts/999/locations/123/reviews"
+        )
+
+    def test_already_qualified_name_not_double_prefixed(self, fake_creds):
+        """A name already starting with 'accounts/' must be used as-is."""
+        from gads_lib.gbp import gbp_list_reviews
+
+        reviews_body = {"reviews": [], "averageRating": 0, "totalReviewCount": 0}
+        reviews_resp = MagicMock()
+        reviews_resp.status_code = 200
+        reviews_resp.text = json.dumps(reviews_body)
+        reviews_resp.json.return_value = reviews_body
+
+        with patch("requests.request", return_value=reviews_resp) as mock_req:
+            gbp_list_reviews(fake_creds, "accounts/1/locations/2")
+
+        called_url = mock_req.call_args[0][1]
+        assert called_url.count("accounts/") == 1
+
+    def test_follows_next_page_token_until_exhausted(self, fake_creds):
+        """All pages must be accumulated into one reviews list, not just page 1."""
+        from gads_lib.gbp import gbp_list_reviews
+
+        body1 = {"reviews": [{"name": "r1"}], "averageRating": 4.5,
+                 "totalReviewCount": 3, "nextPageToken": "tok1"}
+        page1 = MagicMock(status_code=200, text=json.dumps(body1))
+        page1.json.return_value = body1
+
+        body2 = {"reviews": [{"name": "r2"}], "nextPageToken": "tok2"}
+        page2 = MagicMock(status_code=200, text=json.dumps(body2))
+        page2.json.return_value = body2
+
+        body3 = {"reviews": [{"name": "r3"}]}
+        page3 = MagicMock(status_code=200, text=json.dumps(body3))
+        page3.json.return_value = body3
+
+        with patch("requests.request", side_effect=[page1, page2, page3]):
+            result = gbp_list_reviews(fake_creds, "accounts/1/locations/2")
+
+        assert [r["name"] for r in result["reviews"]] == ["r1", "r2", "r3"]
+        assert result["fetchedReviewCount"] == 3
+        assert result["totalReviewCount"] == 3
+        assert result["averageRating"] == 4.5
+        assert result["complete"] is True
+
+    def test_repeated_token_stops_loop_and_flags_incomplete(self, fake_creds):
+        """A misbehaving API repeating the same nextPageToken must not loop forever,
+        and the shortfall must surface as complete=False rather than being silent."""
+        from gads_lib.gbp import gbp_list_reviews
+
+        body1 = {"reviews": [{"name": "r1"}], "totalReviewCount": 5, "nextPageToken": "stuck"}
+        page1 = MagicMock(status_code=200, text=json.dumps(body1))
+        page1.json.return_value = body1
+
+        body2 = {"reviews": [{"name": "r2"}], "totalReviewCount": 5, "nextPageToken": "stuck"}
+        page2 = MagicMock(status_code=200, text=json.dumps(body2))
+        page2.json.return_value = body2
+
+        with patch("requests.request", side_effect=[page1, page2]):
+            result = gbp_list_reviews(fake_creds, "accounts/1/locations/2")
+
+        assert result["fetchedReviewCount"] == 2
+        assert result["totalReviewCount"] == 5
+        assert result["complete"] is False
+
+    def test_limit_stops_fetch_early(self, fake_creds):
+        """An explicit limit truncates accumulation without requiring extra pages."""
+        from gads_lib.gbp import gbp_list_reviews
+
+        body1 = {"reviews": [{"name": "r1"}, {"name": "r2"}],
+                 "totalReviewCount": 5, "nextPageToken": "tok"}
+        page1 = MagicMock(status_code=200, text=json.dumps(body1))
+        page1.json.return_value = body1
+
+        with patch("requests.request", return_value=page1) as mock_req:
+            result = gbp_list_reviews(fake_creds, "accounts/1/locations/2", limit=1)
+
+        assert result["fetchedReviewCount"] == 1
+        assert len(result["reviews"]) == 1
+        assert mock_req.call_count == 1
+
+
+class TestGbpBatchGetReviews:
+    """gbp_batch_get_reviews — per-location full gbp_list_reviews() payload, not a bare list."""
+
+    def test_returns_full_payload_per_location(self, fake_creds):
+        from gads_lib.gbp import gbp_batch_get_reviews
+
+        body = {"reviews": [{"name": "r1"}], "averageRating": 5, "totalReviewCount": 1}
+        resp = MagicMock(status_code=200, text=json.dumps(body))
+        resp.json.return_value = body
+
+        with patch("requests.request", return_value=resp):
+            result = gbp_batch_get_reviews(fake_creds, "accounts/1", ["accounts/1/locations/2"])
+
+        payload = result["accounts/1/locations/2"]
+        assert payload["reviews"][0]["name"] == "r1"
+        assert payload["totalReviewCount"] == 1
+        assert payload["complete"] is True
 
 
 class TestGbpMultiDailyMetrics:

@@ -60,6 +60,8 @@ from gads_lib import (
     gbp_create_local_post,
     gbp_delete_local_post,
     DAILY_METRICS,
+    extract_target_cpa,
+    extract_target_roas,
     generate_keyword_ideas,
     generate_keyword_forecast,
     get_credentials,
@@ -879,7 +881,9 @@ def snapshot(name, save_file, as_json):
     SELECT campaign.name, campaign.id, campaign.status,
            campaign.advertising_channel_type, campaign_budget.amount_micros,
            campaign.bidding_strategy_type,
-           campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas
+           campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas,
+           campaign.maximize_conversions.target_cpa_micros,
+           campaign.maximize_conversion_value.target_roas
     FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.name
     """
     if not as_json:
@@ -894,8 +898,8 @@ def snapshot(name, save_file, as_json):
             "status": camp.get("status", ""), "channel_type": camp.get("advertisingChannelType", ""),
             "budget": int(budget.get("amountMicros", 0)) / 1_000_000,
             "bidding_strategy": camp.get("biddingStrategyType", ""),
-            "target_cpa": int(camp.get("targetCpa", {}).get("targetCpaMicros", 0)) / 1_000_000,
-            "target_roas": float(camp.get("targetRoas", {}).get("targetRoas", 0)),
+            "target_cpa": extract_target_cpa(camp),
+            "target_roas": extract_target_roas(camp),
         })
 
     if not as_json:
@@ -1014,7 +1018,9 @@ def config(as_json, from_db):
         SELECT campaign.name, campaign.id, campaign.status,
                campaign.advertising_channel_type, campaign_budget.amount_micros,
                campaign.bidding_strategy_type,
-               campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas
+               campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas,
+               campaign.maximize_conversions.target_cpa_micros,
+               campaign.maximize_conversion_value.target_roas
         FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.name
         """
         results = run_gaql(creds, gaql)
@@ -1027,8 +1033,8 @@ def config(as_json, from_db):
                 "channel_type": camp.get("advertisingChannelType", ""),
                 "budget": int(budget.get("amountMicros", 0)) / 1_000_000,
                 "bidding_strategy": camp.get("biddingStrategyType", ""),
-                "target_cpa": int(camp.get("targetCpa", {}).get("targetCpaMicros", 0)) / 1_000_000 or None,
-                "target_roas": float(camp.get("targetRoas", {}).get("targetRoas", 0)) or None,
+                "target_cpa": extract_target_cpa(camp),
+                "target_roas": extract_target_roas(camp),
             })
     if as_json:
         print_json(configs)
@@ -1090,7 +1096,9 @@ def refresh(days, with_config, push, as_json):
         SELECT campaign.name, campaign.id, campaign.status,
                campaign.advertising_channel_type, campaign_budget.amount_micros,
                campaign.bidding_strategy_type,
-               campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas
+               campaign.target_cpa.target_cpa_micros, campaign.target_roas.target_roas,
+               campaign.maximize_conversions.target_cpa_micros,
+               campaign.maximize_conversion_value.target_roas
         FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.name
         """
         today = today_local()
@@ -1105,8 +1113,8 @@ def refresh(days, with_config, push, as_json):
                  camp.get("advertisingChannelType", ""), camp.get("status", ""),
                  int(budget.get("amountMicros", 0)) / 1_000_000,
                  camp.get("biddingStrategyType", ""),
-                 int(camp.get("targetCpa", {}).get("targetCpaMicros", 0)) / 1_000_000,
-                 float(camp.get("targetRoas", {}).get("targetRoas", 0))))
+                 extract_target_cpa(camp),
+                 extract_target_roas(camp)))
         conn.commit()
         config_updated = True
         if not as_json:
@@ -1178,13 +1186,24 @@ def gbp_location(location_name, as_json):
 
 @gbp.command("reviews")
 @click.argument("location_name")
+@click.option("--account", "account_name", default=None,
+              help="Account resource name (accounts/ID). Auto-resolved if omitted.")
+@click.option("--limit", type=int, default=None,
+              help="Stop after this many reviews (default: fetch all, following pagination).")
 @click.option("--json", "as_json", is_flag=True)
-def gbp_reviews(location_name, as_json):
+def gbp_reviews(location_name, account_name, limit, as_json):
     """List reviews for a location."""
     enforce_allowed_caller()
-    data = gbp_list_reviews(get_credentials(), location_name, as_json=as_json)
+    data = gbp_list_reviews(get_credentials(), location_name, account_name=account_name,
+                             limit=limit, as_json=as_json)
     reviews = data.get("reviews", [])
-    if as_json: return print_json(reviews)
+    if as_json: return print_json(data)
+    total = data.get("totalReviewCount", len(reviews))
+    avg = data.get("averageRating", "")
+    summary = f"  {len(reviews)} review(s), averageRating {avg}, totalReviewCount {total}"
+    if not data.get("complete", True) and limit is None:
+        summary += "  ⚠ INCOMPLETE FETCH — pagination stopped early"
+    click.secho(summary, bold=True)
     rows = [{"name": r.get("name",""), "reviewer": ((r.get("reviewer") or {}).get("displayName")) or "",
              "stars": r.get("starRating",""),
              "comment": (r.get("comment","")[:80]+"…") if len(r.get("comment",""))>80 else r.get("comment",""),
@@ -1195,16 +1214,26 @@ def gbp_reviews(location_name, as_json):
 
 @gbp.command("batch-reviews")
 @click.argument("location_names", nargs=-1, required=True)
-@click.option("--account", "account_name", default="", help="Account name (optional, for context).")
+@click.option("--account", "account_name", default=None,
+              help="Account resource name (accounts/ID). Auto-resolved per location if omitted.")
+@click.option("--limit", type=int, default=None,
+              help="Stop after this many reviews per location (default: fetch all).")
 @click.option("--json", "as_json", is_flag=True)
-def gbp_batch_reviews_cmd(location_names, account_name, as_json):
+def gbp_batch_reviews_cmd(location_names, account_name, limit, as_json):
     """Fetch reviews from multiple locations at once."""
     enforce_allowed_caller()
-    data = gbp_batch_get_reviews(get_credentials(), account_name, list(location_names), as_json=as_json)
+    data = gbp_batch_get_reviews(get_credentials(), account_name, list(location_names),
+                                  limit=limit, as_json=as_json)
     if as_json:
         return print_json(data)
-    for loc, reviews in data.items():
-        click.secho(f"\n  {loc} ({len(reviews)} review(s))", bold=True)
+    for loc, payload in data.items():
+        reviews = payload.get("reviews", [])
+        total = payload.get("totalReviewCount", len(reviews))
+        avg = payload.get("averageRating", "")
+        header = f"\n  {loc} — {len(reviews)} review(s), averageRating {avg}, totalReviewCount {total}"
+        if not payload.get("complete", True) and limit is None:
+            header += "  ⚠ INCOMPLETE FETCH — pagination stopped early"
+        click.secho(header, bold=True)
         rows = [{"reviewer": ((r.get("reviewer") or {}).get("displayName")) or "",
                  "stars": r.get("starRating", ""),
                  "comment": (r.get("comment", "")[:60] + "…") if len(r.get("comment", "")) > 60 else r.get("comment", ""),
@@ -1279,17 +1308,21 @@ def gbp_delete_post_cmd(account_name, location_id, post_id, yes, as_json):
 @gbp.command("reply-review")
 @click.argument("review_name")
 @click.argument("comment")
-def gbp_reply_review_cmd(review_name, comment):
+@click.option("--account", "account_name", default=None,
+              help="Account resource name (accounts/ID). Auto-resolved if omitted.")
+def gbp_reply_review_cmd(review_name, comment, account_name):
     """Reply to a review."""
     enforce_allowed_caller()
-    print_json(gbp_reply_review(get_credentials(), review_name, comment))
+    print_json(gbp_reply_review(get_credentials(), review_name, comment, account_name=account_name))
 
 @gbp.command("delete-reply")
 @click.argument("review_name")
-def gbp_delete_reply_cmd(review_name):
+@click.option("--account", "account_name", default=None,
+              help="Account resource name (accounts/ID). Auto-resolved if omitted.")
+def gbp_delete_reply_cmd(review_name, account_name):
     """Delete a review reply."""
     enforce_allowed_caller()
-    gbp_delete_reply(get_credentials(), review_name)
+    gbp_delete_reply(get_credentials(), review_name, account_name=account_name)
     click.secho(f"✓ Reply deleted", fg="green")
 
 

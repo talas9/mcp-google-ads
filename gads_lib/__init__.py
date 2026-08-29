@@ -27,6 +27,8 @@ from .ads import (
     ads_mutate,
     ads_batch_mutate,
     ads_upload_click_conversions,
+    extract_target_cpa,
+    extract_target_roas,
     generate_keyword_ideas,
     generate_keyword_forecast,
     sanitize_keyword,

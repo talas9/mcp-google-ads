@@ -10,10 +10,65 @@ GBP_ACCOUNT_BASE = "https://mybusinessaccountmanagement.googleapis.com/v1"
 GBP_INFO_BASE = "https://mybusinessbusinessinformation.googleapis.com/v1"
 GBP_V4_BASE = "https://mybusiness.googleapis.com/v4"
 
+# Safety valve for gbp_list_reviews' pagination loop — a location with this many
+# pages (at page_size=50, up to 5,000 reviews) would be extraordinary; stop
+# rather than spin forever if the API ever misbehaves.
+MAX_REVIEW_PAGES = 100
+
 
 # KB: kb/gbp.md § accounts | https://developers.google.com/my-business/reference/accountmanagement/rest/v1/accounts/list
 def gbp_list_accounts(creds, as_json=False):
     return request_json("GET", f"{GBP_ACCOUNT_BASE}/accounts", headers=get_bearer_headers(creds), as_json=as_json)
+
+
+# Cache of the auto-resolved GBP account resource name, per process, so repeated
+# review calls in the same invocation (e.g. gbp_batch_get_reviews) don't each
+# re-fetch the accounts list.
+_resolved_account_cache = {"name": None}
+
+
+def _resolve_gbp_account(creds, account_name=None):
+    """Resolve the "accounts/{id}" resource name to prefix onto bare v4 names.
+
+    The legacy GBP v4 reviews API (mybusiness.googleapis.com/v4) requires the
+    parent account in the path (accounts/{A}/locations/{L}/reviews), unlike the
+    newer Account Management / Business Information APIs which accept a bare
+    "locations/{L}". If account_name is given explicitly, it's used as-is.
+    Otherwise this auto-discovers the account via gbp_list_accounts, preferring
+    the LOCATION_GROUP account (the one that actually owns locations).
+    """
+    if account_name:
+        return account_name
+    if _resolved_account_cache["name"]:
+        return _resolved_account_cache["name"]
+    data = gbp_list_accounts(creds)
+    accounts = data.get("accounts", [])
+    location_groups = [a for a in accounts if a.get("type") == "LOCATION_GROUP"]
+    if len(location_groups) == 1:
+        resolved = location_groups[0]["name"]
+    elif len(accounts) == 1:
+        resolved = accounts[0]["name"]
+    else:
+        raise ValueError(
+            "Could not auto-resolve a single GBP account (found "
+            f"{len(accounts)} accounts, {len(location_groups)} of type "
+            "LOCATION_GROUP). Pass account_name explicitly (--account accounts/{id})."
+        )
+    _resolved_account_cache["name"] = resolved
+    return resolved
+
+
+def _qualify_gbp_name(creds, name, account_name=None):
+    """Ensure a v4 resource name (location or review) is account-qualified.
+
+    Accepts either a bare name ("locations/{L}" or "locations/{L}/reviews/{R}")
+    or an already-qualified one ("accounts/{A}/locations/{L}[...]"), which is
+    returned unchanged to avoid double-prefixing.
+    """
+    if name.startswith("accounts/"):
+        return name
+    account = _resolve_gbp_account(creds, account_name)
+    return f"{account}/{name}"
 
 
 # KB: kb/gbp.md § locations | https://developers.google.com/my-business/reference/businessinformation/rest/v1/accounts.locations/list
@@ -45,21 +100,63 @@ def gbp_get_location(creds, location_name, read_mask=None, as_json=False):
 
 
 # KB: kb/gbp.md § reviews | https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/list
-def gbp_list_reviews(creds, location_name, page_size=50, as_json=False):
-    return request_json(
-        "GET",
-        f"{GBP_V4_BASE}/{location_name}/reviews",
-        headers=get_bearer_headers(creds),
-        params={"pageSize": page_size},
-        as_json=as_json,
-    )
+def gbp_list_reviews(creds, location_name, page_size=50, account_name=None, as_json=False, limit=None):
+    """Fetch ALL reviews for a location, following nextPageToken to exhaustion.
+
+    The raw v4 API paginates (page_size caps each page, default/max 50), so a
+    single request silently returns only the first page. This accumulates
+    every page into one `reviews` list and returns it alongside the API's own
+    `averageRating` / `totalReviewCount` fields (computed over ALL reviews,
+    not just the fetched page) plus two fields this function adds:
+    `fetchedReviewCount` (len of what was actually accumulated) and
+    `complete` (True iff fetchedReviewCount == totalReviewCount) — so a
+    partial fetch (loop cut short by MAX_REVIEW_PAGES, a repeated token, or
+    an explicit `limit`) is visible in the return value instead of silently
+    under-reporting.
+
+    limit: optional cap on the number of reviews to accumulate before
+    stopping early (a caller deliberately fetching fewer, e.g. for a quick
+    sample). None (default) fetches everything.
+    """
+    qualified = _qualify_gbp_name(creds, location_name, account_name)
+    params = {"pageSize": page_size}
+    all_reviews = []
+    result = {}
+    seen_tokens = set()
+    for _ in range(MAX_REVIEW_PAGES):
+        data = request_json(
+            "GET",
+            f"{GBP_V4_BASE}/{qualified}/reviews",
+            headers=get_bearer_headers(creds),
+            params=params,
+            as_json=as_json,
+        )
+        if not result:
+            # Capture the API's own top-level fields (averageRating, etc.)
+            # from the first page only; reviews/nextPageToken are handled below.
+            result = {k: v for k, v in data.items() if k not in ("reviews", "nextPageToken")}
+        all_reviews.extend(data.get("reviews", []))
+        if limit is not None and len(all_reviews) >= limit:
+            all_reviews = all_reviews[:limit]
+            break
+        token = data.get("nextPageToken")
+        if not token or token in seen_tokens:
+            break
+        seen_tokens.add(token)
+        params["pageToken"] = token
+    result["reviews"] = all_reviews
+    result.setdefault("totalReviewCount", len(all_reviews))
+    result["fetchedReviewCount"] = len(all_reviews)
+    result["complete"] = result["fetchedReviewCount"] >= int(result["totalReviewCount"])
+    return result
 
 
 # KB: kb/gbp.md § reviews | https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/updateReply
-def gbp_reply_review(creds, review_name, comment, as_json=False):
+def gbp_reply_review(creds, review_name, comment, account_name=None, as_json=False):
+    qualified = _qualify_gbp_name(creds, review_name, account_name)
     return request_json(
         "PUT",
-        f"{GBP_V4_BASE}/{review_name}/reply",
+        f"{GBP_V4_BASE}/{qualified}/reply",
         headers=get_bearer_headers(creds),
         json_body={"comment": comment},
         as_json=as_json,
@@ -67,10 +164,11 @@ def gbp_reply_review(creds, review_name, comment, as_json=False):
 
 
 # KB: kb/gbp.md § reviews | https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/deleteReply
-def gbp_delete_reply(creds, review_name, as_json=False):
+def gbp_delete_reply(creds, review_name, account_name=None, as_json=False):
+    qualified = _qualify_gbp_name(creds, review_name, account_name)
     return request_json(
         "DELETE",
-        f"{GBP_V4_BASE}/{review_name}/reply",
+        f"{GBP_V4_BASE}/{qualified}/reply",
         headers=get_bearer_headers(creds),
         as_json=as_json,
     )
@@ -176,9 +274,25 @@ def gbp_multi_daily_metrics(creds, location_name, metrics, start_date, end_date)
             values = []
             for dv in series.get("timeSeries", {}).get("datedValues", []):
                 d = dv["date"]
+                # The API omits the "value" key entirely for a date this metric
+                # hasn't backfilled yet (GBP Performance backfills on a staggered
+                # per-metric schedule -- some metrics land in ~3 days, others take
+                # ~8). That's the ONLY signal that a date is "not landed yet" --
+                # every date in the requested range gets an entry either way, so
+                # a missing date never occurs; only a missing "value" key does.
+                # A genuinely-measured zero is indistinguishable from "not
+                # landed" at a single location in isolation (the API omits
+                # "value" for both), so this returns None here rather than
+                # guessing, and leaves the zero-vs-not-landed decision to the
+                # caller, which can disambiguate using data other locations
+                # provide for the same date (see fetch_daily.py's
+                # fetch_gbp_performance). Do NOT default this to 0 -- doing so
+                # is what silently turned "not landed yet" into a permanent
+                # false zero (2026-08-29 incident).
+                raw_value = dv.get("value")
                 values.append({
                     "date": f"{d['year']}-{d['month']:02d}-{d['day']:02d}",
-                    "value": int(dv.get("value", 0)),
+                    "value": None if raw_value is None else int(raw_value),
                 })
             result[metric_name] = values
     return result
@@ -226,28 +340,36 @@ def gbp_search_keywords_monthly(creds, location_name, start_month, end_month, pa
 # ── Reviews batch helper ─────────────────────────────────────
 
 # KB: kb/gbp.md § reviews | https://developers.google.com/my-business/reference/rest/v4/accounts.locations.reviews/list
-def gbp_batch_get_reviews(creds, account_name, location_names, page_size=50, as_json=False):
+def gbp_batch_get_reviews(creds, account_name, location_names, page_size=50, as_json=False, limit=None):
     """Collect reviews for multiple locations.
 
     GBP v4 has no true batch-reviews endpoint, so this iterates over each
-    location and calls gbp_list_reviews, returning a dict keyed by location
-    resource name.
+    location and calls gbp_list_reviews (which itself paginates through
+    nextPageToken to fetch every review, not just the first page), returning
+    a dict keyed by location resource name.
 
     Args:
         creds: OAuth credentials.
-        account_name: e.g. "accounts/123456789" (unused by gbp_list_reviews
-            directly, kept for API symmetry / future use).
-        location_names: list of location resource names like
-            "accounts/X/locations/Y".
+        account_name: e.g. "accounts/123456789". Optional — if omitted (or
+            falsy), each location is auto-qualified via gbp_list_reviews'
+            own account resolution (accounts/X/locations/Y).
+        location_names: list of location resource names, either bare
+            ("locations/Y") or already-qualified ("accounts/X/locations/Y").
         page_size: passed through to gbp_list_reviews for each location.
+        limit: optional cap on reviews fetched per location (see
+            gbp_list_reviews). None (default) fetches everything.
 
     Returns:
-        {location_name: [review, ...]}
+        {location_name: {reviews, averageRating, totalReviewCount,
+                          fetchedReviewCount, complete}} — the full
+        gbp_list_reviews() result per location, so callers (and the CLI)
+        can see whether the fetch was complete.
     """
     results = {}
     for location_name in location_names:
-        resp = gbp_list_reviews(creds, location_name, page_size=page_size, as_json=as_json)
-        results[location_name] = resp.get("reviews", [])
+        resp = gbp_list_reviews(creds, location_name, page_size=page_size,
+                                 account_name=account_name, limit=limit, as_json=as_json)
+        results[location_name] = resp
     return results
 
 
