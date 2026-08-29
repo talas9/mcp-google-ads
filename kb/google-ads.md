@@ -2123,20 +2123,63 @@ POST customers/3552856345/conversionActions:mutate
 
 #### ConversionAction type enum
 
+Verified 2026-08-29 against the live, authoritative source for this account's
+API version -- `GoogleAdsFieldService.SearchGoogleAdsFields` (read-only field
+metadata query, no account mutation):
+`POST googleAdsFields:search` with `{"query": "SELECT name, enum_values WHERE name = 'conversion_action.type'"}`
+(note: no `FROM` clause -- this service rejects one). This replaced a stale
+table: `PHONE_CALL`, `APP_INSTALL`, `APP_IN_APP_PURCHASE`, `FIREBASE`, and
+bare `GOOGLE_ANALYTICS` do NOT exist as values in the live enum -- they were
+coarser-grained labels from an older API generation, since split into the
+granular per-platform/per-event values below. The CLI's `conversion create
+--type` bug (`UPLOAD` is not a valid value; `UPLOAD_CLICKS` is) was found and
+fixed by cross-checking this same list.
+
 | `type` value | Description |
 |-------------|-------------|
 | `WEBPAGE` | Tag on website (Google tag / gtag.js) |
+| `WEBPAGE_CODELESS` | Auto-detected website conversion, no tag required |
 | `UPLOAD_CLICKS` | Offline click conversions (gclid-based) |
 | `UPLOAD_CALLS` | Offline call conversions |
-| `PHONE_CALL` | Phone call from ad |
+| `AD_CALL` | Call from a call-only/call extension ad |
+| `CLICK_TO_CALL` | Click on a call extension |
 | `WEBSITE_CALL` | Phone call from website (Google forwarding number) |
-| `APP_INSTALL` | Mobile app install |
-| `APP_IN_APP_PURCHASE` | In-app purchase |
-| `FIREBASE` | Firebase SDK event |
-| `GOOGLE_ANALYTICS` | GA4 imported conversion |
-| `GOOGLE_ANALYTICS_4` | GA4 connected property |
+| `SMART_CAMPAIGN_AD_CLICKS_TO_CALL` | Smart campaign: call from ad click |
+| `SMART_CAMPAIGN_MAP_CLICKS_TO_CALL` | Smart campaign: call from Maps click |
+| `SMART_CAMPAIGN_MAP_DIRECTIONS` | Smart campaign: directions request |
+| `SMART_CAMPAIGN_TRACKED_CALLS` | Smart campaign: tracked call |
+| `LOCAL_SERVICES_ADS` | Local Services Ads lead |
+| `GOOGLE_HOSTED` | Google-hosted conversion (e.g. Google-hosted forms) |
+| `GOOGLE_PLAY_DOWNLOAD` | Google Play app download |
+| `GOOGLE_PLAY_IN_APP_PURCHASE` | Google Play in-app purchase |
+| `FIREBASE_ANDROID_FIRST_OPEN` / `FIREBASE_IOS_FIRST_OPEN` | Firebase: first app open |
+| `FIREBASE_ANDROID_IN_APP_PURCHASE` / `FIREBASE_IOS_IN_APP_PURCHASE` | Firebase: in-app purchase |
+| `FIREBASE_ANDROID_GENERATE_LEAD` / `FIREBASE_IOS_GENERATE_LEAD` | Firebase: lead generated |
+| `FIREBASE_ANDROID_QUALIFY_LEAD` / `FIREBASE_IOS_QUALIFY_LEAD` | Firebase: lead qualified |
+| `FIREBASE_ANDROID_CLOSE_CONVERT_LEAD` / `FIREBASE_IOS_CLOSE_CONVERT_LEAD` | Firebase: lead closed/converted |
+| `FIREBASE_ANDROID_CUSTOM` / `FIREBASE_IOS_CUSTOM` | Firebase: custom event |
+| `THIRD_PARTY_APP_ANALYTICS_ANDROID_FIRST_OPEN` / `THIRD_PARTY_APP_ANALYTICS_IOS_FIRST_OPEN` | Third-party SDK: first app open |
+| `THIRD_PARTY_APP_ANALYTICS_ANDROID_IN_APP_PURCHASE` / `THIRD_PARTY_APP_ANALYTICS_IOS_IN_APP_PURCHASE` | Third-party SDK: in-app purchase |
+| `THIRD_PARTY_APP_ANALYTICS_ANDROID_CUSTOM` / `THIRD_PARTY_APP_ANALYTICS_IOS_CUSTOM` | Third-party SDK: custom event |
+| `ANDROID_APP_PRE_REGISTRATION` | Android app pre-registration |
+| `ANDROID_INSTALLS_ALL_OTHER_APPS` | Android install, all other apps |
+| `GOOGLE_ANALYTICS_4_PURCHASE` | GA4: purchase |
+| `GOOGLE_ANALYTICS_4_GENERATE_LEAD` | GA4: lead generated |
+| `GOOGLE_ANALYTICS_4_QUALIFY_LEAD` | GA4: lead qualified |
+| `GOOGLE_ANALYTICS_4_CLOSE_CONVERT_LEAD` | GA4: lead closed/converted |
+| `GOOGLE_ANALYTICS_4_CUSTOM` | GA4: custom event |
+| `GOOGLE_ANALYTICS_4` | GA4 connected property (legacy label; new setups use the granular `GOOGLE_ANALYTICS_4_*` values above) |
+| `UNIVERSAL_ANALYTICS_GOAL` | Universal Analytics goal (legacy GA) |
+| `UNIVERSAL_ANALYTICS_TRANSACTION` | Universal Analytics transaction (legacy GA) |
+| `FLOODLIGHT_ACTION` | Floodlight (Campaign Manager 360) action |
+| `FLOODLIGHT_TRANSACTION` | Floodlight (Campaign Manager 360) transaction |
 | `SALESFORCE` | Salesforce CRM |
-| `THIRD_PARTY_APP_ANALYTICS` | Third-party SDK |
+| `SEARCH_ADS_360` | Search Ads 360 conversion |
+| `STORE_SALES` | Store sales (aggregated) |
+| `STORE_SALES_DIRECT_UPLOAD` | Store sales, direct upload |
+| `STORE_VISITS` | Store visit |
+| `LEAD_FORM_SUBMIT` | Lead form submission |
+| `UNKNOWN` / `UNSPECIFIED` | Not set / not returned by the API |
 
 #### Counting type enum
 

@@ -674,6 +674,86 @@ class TestNormalizePhone:
 
         assert _normalize_phone(None) is None
 
+    def test_leading_apostrophe_spreadsheet_guard(self):
+        """Zoho MobilePhone export leaves a leading ' text-guard on numeric
+        cells (e.g. "'+971527935444"). Before the fix this silently produced
+        a WRONG number missing its country code, not None -- worse than
+        dropping, since it looked normalized but would never match."""
+        from gads_lib.ads import _normalize_phone
+
+        assert _normalize_phone("'+971527935444") == "+971527935444"
+        assert _normalize_phone("'0501234567") == "+971501234567"
+        assert _normalize_phone("'00971501234567") == "+971501234567"
+
+    def test_leading_double_quote_guard(self):
+        from gads_lib.ads import _normalize_phone
+
+        assert _normalize_phone('"0501234567"'.rstrip('"')) == "+971501234567"
+
+    def test_unicode_dash_variants(self):
+        """En dash / em dash from spreadsheet autocorrect, not just ASCII
+        hyphen."""
+        from gads_lib.ads import _normalize_phone
+
+        assert _normalize_phone("050–123–4567") == "+971501234567"  # en dash
+        assert _normalize_phone("050—123—4567") == "+971501234567"  # em dash
+
+    def test_arabic_indic_digits(self):
+        """Plausible for a UAE CRM with Arabic-locale data entry -- must
+        convert to ASCII digit values, not survive as literal Unicode
+        digit characters that would hash to something unmatchable."""
+        from gads_lib.ads import _normalize_phone
+
+        assert _normalize_phone("٠٥٠١٢٣٤٥٦٧") == "+971501234567"
+
+    def test_fullwidth_digits(self):
+        from gads_lib.ads import _normalize_phone
+
+        assert _normalize_phone("０５０１２３４５６７") == "+971501234567"
+
+    def test_apostrophe_alone_returns_none(self):
+        """A guard character with nothing usable behind it must still be
+        rejected, not turned into a bogus '+' number."""
+        from gads_lib.ads import _normalize_phone
+
+        assert _normalize_phone("'") is None
+
+
+class TestBuildUserOpPhoneDropped:
+    """_build_user_op's (op, phone_dropped) contract -- an unparseable phone
+    must be visible to the caller, not silently vanish (2026-08-29 fix)."""
+
+    def test_valid_phone_not_dropped(self):
+        from gads_lib.ads import _build_user_op
+
+        op, dropped = _build_user_op(phone="0501234567")
+        assert dropped is False
+        assert op is not None
+
+    def test_unparseable_phone_flagged_dropped(self):
+        from gads_lib.ads import _build_user_op
+
+        op, dropped = _build_user_op(phone="123")
+        assert dropped is True
+        assert op is None
+
+    def test_unparseable_phone_but_email_present_still_flagged(self):
+        """The op still succeeds via email, but the phone loss must still be
+        reported -- this is the case a bare success/failure return would
+        hide completely."""
+        from gads_lib.ads import _build_user_op
+
+        op, dropped = _build_user_op(phone="123", email="a@b.com")
+        assert dropped is True
+        assert op is not None
+
+    def test_no_phone_not_dropped(self):
+        from gads_lib.ads import _build_user_op
+
+        op, dropped = _build_user_op(email="a@b.com")
+        assert dropped is False
+        assert op is not None
+
 
 class TestPrintError:
     """Bonus — print_error returns the correct numeric exit code."""
@@ -1978,6 +2058,47 @@ class TestGa4CheckCompatibility:
 # GROUP C — gbp.py: reply review, delete reply, multi daily metrics, search
 #           keywords, local posts CRUD
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGbpLocationReadMaskCli:
+    """gads gbp location --read-mask — CLI surface for gbp_get_location's read_mask.
+
+    The command's default read_mask omits `categories`, `openInfo` and `latlng`, so
+    those fields are unreachable without an override; these cover the override and
+    the unchanged default.
+    """
+
+    def test_read_mask_option_is_forwarded(self, fake_creds):
+        """--read-mask overrides the command's built-in default mask."""
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+
+        runner = CliRunner()
+        with patch("gads_lib.cli.get_credentials", return_value=fake_creds), \
+             patch("gads_lib.cli.gbp_get_location", return_value={}) as mock_get:
+            result = runner.invoke(
+                cli,
+                ["gbp", "location", "locations/123",
+                 "--read-mask", "name,title,categories,openInfo,latlng", "--json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_get.call_args.kwargs["read_mask"] == "name,title,categories,openInfo,latlng"
+
+    def test_default_read_mask_unchanged_when_option_omitted(self, fake_creds):
+        """Omitting --read-mask keeps the previous default mask verbatim."""
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+
+        runner = CliRunner()
+        with patch("gads_lib.cli.get_credentials", return_value=fake_creds), \
+             patch("gads_lib.cli.gbp_get_location", return_value={}) as mock_get:
+            result = runner.invoke(cli, ["gbp", "location", "locations/123", "--json"])
+
+        assert result.exit_code == 0, result.output
+        mask = mock_get.call_args.kwargs["read_mask"]
+        assert mask.startswith("name,title,storeCode,phoneNumbers")
+        assert "categories" not in mask
+
 
 class TestGbpReplyReview:
     """gbp_reply_review — PUT request with 'comment' in body."""

@@ -1173,12 +1173,16 @@ def gbp_locations(account_name, as_json):
 
 @gbp.command("location")
 @click.argument("location_name")
+@click.option("--read-mask", "read_mask", default=None,
+              help="Comma-separated Location fields to return, overriding the default set. "
+                   "Fields outside the default are only returned when named here, e.g. "
+                   "'name,title,categories,openInfo,latlng'.")
 @click.option("--json", "as_json", is_flag=True)
-def gbp_location(location_name, as_json):
+def gbp_location(location_name, read_mask, as_json):
     """Get one location detail."""
     enforce_allowed_caller()
     data = gbp_get_location(get_credentials(), location_name,
-        read_mask="name,title,storeCode,phoneNumbers,websiteUri,regularHours,specialHours,serviceArea,storefrontAddress,metadata,profile,labels,languageCode",
+        read_mask=read_mask or "name,title,storeCode,phoneNumbers,websiteUri,regularHours,specialHours,serviceArea,storefrontAddress,metadata,profile,labels,languageCode",
         as_json=as_json)
     if as_json: return print_json(data)
     rows = [{"field": k, "value": v} for k, v in data.items() if not isinstance(v, (dict, list))]
@@ -2850,7 +2854,7 @@ def conversion_list(as_json):
 
 @conversion_group.command("create")
 @click.argument("name")
-@click.option("--type", "conv_type", default="WEBPAGE", type=click.Choice(["WEBPAGE", "UPLOAD", "AD_CALL", "CLICK_TO_CALL"]))
+@click.option("--type", "conv_type", default="WEBPAGE", type=click.Choice(["WEBPAGE", "UPLOAD_CLICKS", "UPLOAD_CALLS", "AD_CALL", "CLICK_TO_CALL"]))
 @click.option("--category", default="DEFAULT")
 @click.option("--dry-run", is_flag=True)
 @click.option("--yes", "-y", is_flag=True)
@@ -3180,6 +3184,8 @@ def audience_upload(csv_path, list_name, create_if_missing, description, life_sp
     click.echo(f"    List:     {list_name}")
     click.echo(f"    Rows:     {stats['rows_uploaded']}")
     click.echo(f"    Job:      {job_rn}")
+    if stats.get("phone_dropped"):
+        click.secho(f"    Phone numbers dropped: {stats['phone_dropped']} (unparseable -- see warning above)", fg="yellow")
     click.echo(f"\n  Check job status:  gads query \"SELECT offline_user_data_job.id, offline_user_data_job.status FROM offline_user_data_job WHERE offline_user_data_job.resource_name = '{job_rn}'\"")
     click.echo(f"  Check list sizes:  gads audience list --json | grep '{list_name}'")
 

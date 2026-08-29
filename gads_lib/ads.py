@@ -5,6 +5,7 @@ KB reference: kb/google-ads.md (relative to gads-cli root)
 Official docs: https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/
 """
 import re
+import unicodedata
 import click
 import requests
 
@@ -380,12 +381,44 @@ def _is_valid_name(n):
 
 
 def _normalize_phone(raw):
-    """Normalize phone to E.164 format. Returns normalized string or None."""
+    """Normalize phone to E.164 format. Returns normalized string or None.
+
+    Real-world exports (Zoho CRM in particular) contaminate phone values in
+    ways that don't just fail to parse -- they parse into a WRONG number that
+    silently hashes to something Google's Customer Match will never match,
+    with no error to signal it. All of the following must be cleaned up
+    BEFORE the country-code branching below runs, because a single leftover
+    leading character (e.g. a spreadsheet text-guard apostrophe) breaks every
+    startswith() check and produces a number missing its country code rather
+    than None -- worse than a rejected value, since nothing flags it:
+      - Leading `'`/`"` (Excel/Zoho spreadsheet text-guard on numeric cells,
+        e.g. Zoho's MobilePhone export: "'+971527935444").
+      - Unicode dash variants (en dash, em dash, minus sign, etc.) beyond the
+        plain ASCII hyphen already handled.
+      - Non-ASCII decimal digits (Arabic-Indic, fullwidth, etc.) -- plausible
+        for a UAE CRM with Arabic-locale data entry -- converted to their
+        ASCII value rather than left as literal Unicode digit characters
+        that would silently survive into the hash.
+    (Ordinary whitespace, including non-breaking space, was already handled
+    by \\s below -- Python's \\s is Unicode-aware.)
+    """
     if not raw:
         return None
-    raw = raw.strip()
-    # Remove common prefixes/formatting
-    raw = re.sub(r'[\s\-\.\(\)]', '', raw)
+    raw = str(raw).strip()
+    raw = raw.lstrip("'\"").strip()
+    if not raw:
+        return None
+    raw = "".join(
+        str(unicodedata.digit(ch)) if ch.isdigit() and not ch.isascii() else ch
+        for ch in raw
+    )
+    # Remove common prefixes/formatting, including Unicode dash punctuation
+    # (‐-―: hyphen, non-breaking hyphen, figure/en/em dash,
+    # horizontal bar; −: minus sign) an export/autocorrect tool can
+    # introduce in place of a plain ASCII hyphen.
+    raw = re.sub(r'[\s\-‐-―−\.\(\)]', '', raw)
+    if not raw:
+        return None
     if raw.startswith('00'):
         raw = '+' + raw[2:]
     elif raw.startswith('05') and len(raw) == 10:
@@ -404,12 +437,25 @@ def _normalize_phone(raw):
 
 
 def _build_user_op(phone=None, email=None, first_name=None, last_name=None, country=""):
-    """Build one Customer Match userDataOperation with SHA-256 hashed identifiers."""
+    """Build one Customer Match userDataOperation with SHA-256 hashed identifiers.
+
+    Returns (op_or_None, phone_dropped). `phone_dropped` is True when `phone`
+    was provided but _normalize_phone() couldn't make a usable number of it
+    -- the caller should surface this rather than let it vanish silently, per
+    the same "a value that cannot be made valid should be visible, not
+    vanish" rule as (now-fixed) phone normalization itself. Note an op can
+    still come back non-None via email/name even when its phone was dropped,
+    which would otherwise hide the loss completely (the row "succeeds" while
+    quietly missing its phone-match signal).
+    """
     ids = []
+    phone_dropped = False
     if phone:
         normalized = _normalize_phone(phone)
         if normalized:
             ids.append({"hashedPhoneNumber": _sha256(normalized)})
+        else:
+            phone_dropped = True
     if email and "@" in email:
         ids.append({"hashedEmail": _sha256(email.strip().lower())})
     if _is_valid_name(first_name) and _is_valid_name(last_name):
@@ -421,8 +467,8 @@ def _build_user_op(phone=None, email=None, first_name=None, last_name=None, coun
             addr["countryCode"] = country.strip().upper()
         ids.append({"addressInfo": addr})
     if not ids:
-        return None
-    return {"create": {"userIdentifiers": ids}}
+        return None, phone_dropped
+    return {"create": {"userIdentifiers": ids}}, phone_dropped
 
 
 # KB: kb/google-ads.md § customer-match | https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/customers.userLists
@@ -482,21 +528,30 @@ def audience_upload_csv(creds, list_resource_name, csv_path, batch_size=100, max
 
     # 2. Read CSV and build operations
     rows = []
+    phone_dropped = 0
     with open(csv_path, newline="", encoding="utf-8-sig", errors="replace") as f:
         for i, row in enumerate(csv.DictReader(f)):
             if max_rows and i >= max_rows:
                 break
-            op = _build_user_op(
+            op, dropped = _build_user_op(
                 phone=row.get("Phone", ""),
                 email=row.get("Email", ""),
                 first_name=row.get("First Name", ""),
                 last_name=row.get("Last Name", ""),
                 country=row.get("Country", ""),
             )
+            if dropped:
+                phone_dropped += 1
             if op:
                 rows.append(op)
 
     click.echo(f"  Rows: {len(rows)} valid operations from CSV")
+    if phone_dropped:
+        click.secho(
+            f"  WARNING: {phone_dropped} phone number(s) could not be normalized "
+            f"and were dropped (row still uploaded via email/name if present)",
+            fg="yellow",
+        )
 
     # 3. Upload in batches with retry
     add_url = f"https://googleads.googleapis.com/{API_VERSION}/{job_rn}:addOperations"
@@ -532,5 +587,10 @@ def audience_upload_csv(creds, list_resource_name, csv_path, batch_size=100, max
     run_url = f"https://googleads.googleapis.com/{API_VERSION}/{job_rn}:run"
     request_json("POST", run_url, headers=headers, json_body={}, timeout=120)
 
-    stats = {"job": job_rn, "rows_uploaded": uploaded, "total_csv_ops": len(rows)}
+    stats = {
+        "job": job_rn,
+        "rows_uploaded": uploaded,
+        "total_csv_ops": len(rows),
+        "phone_dropped": phone_dropped,
+    }
     return job_rn, stats
