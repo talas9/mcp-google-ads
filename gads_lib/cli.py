@@ -651,24 +651,9 @@ def _do_oauth_login(client_secret_path, token_output_path, port=9090, allow_part
     """Run the OAuth browser flow and save the token."""
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    SCOPES = [
-        "https://www.googleapis.com/auth/adwords",
-        "https://www.googleapis.com/auth/business.manage",
-        "https://www.googleapis.com/auth/content",
-        "https://www.googleapis.com/auth/analytics.readonly",
-        "https://www.googleapis.com/auth/webmasters.readonly",
-    ]
+    from .auth import SCOPES, SCOPE_NAMES as scope_names
 
     import json as _json
-
-    scope_names = {
-        "https://www.googleapis.com/auth/adwords": "Google Ads",
-        "https://www.googleapis.com/auth/business.manage": "Business Profile",
-        "https://www.googleapis.com/auth/content": "Merchant Center",
-        "https://www.googleapis.com/auth/analytics.readonly": "GA4 Analytics",
-        "https://www.googleapis.com/auth/analytics.edit": "GA4 Analytics (edit)",
-        "https://www.googleapis.com/auth/webmasters.readonly": "Search Console",
-    }
 
     token_output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1763,6 +1748,96 @@ def gsc_inspect_cmd(url, site, lang, as_json):
 
 # ── Merchant commands ────────────────────────────────────────
 
+def _mc_paginate_products(fetch_fn, creds, page_size=1000, max_pages=100):
+    """Page a Merchant API products-list call to exhaustion.
+
+    Both mc_list_products and mc_list_product_statuses page over the same
+    `products` resource (nextPageToken) -- the products endpoint's documented
+    max pageSize is 1000 (kb/merchant-api.md), so most catalogues fetch in a
+    single call, but nextPageToken is still followed for accounts above that.
+    A hard 100-page cap prevents a server-side token bug from spinning
+    forever (mirrors tools/fetch_detail.py's fetch_merchant_product_status).
+
+    Returns (products, truncated) where truncated is True only if the safety
+    cap was hit while a nextPageToken was still present.
+    """
+    token = None
+    pages = 0
+    products = []
+    while True:
+        data = fetch_fn(creds, max_results=page_size, page_token=token)
+        products.extend(data.get("products", []))
+        token = data.get("nextPageToken")
+        pages += 1
+        if not token or pages >= max_pages:
+            break
+    truncated = bool(token) and pages >= max_pages
+    return products, truncated
+
+
+# Severities that mean the product is actually suppressed or demoted right
+# now (mirrors tools/fetch_detail.py's BLOCKING_ISSUE_SEVERITIES). Anything
+# else (e.g. NOT_IMPACTED, SUGGESTION) is a forward-looking advisory.
+_MC_BLOCKING_ISSUE_SEVERITIES = {"DISAPPROVED", "DEMOTED", "ERROR"}
+
+
+def _mc_destination_state(dest):
+    """Classify one destinationStatuses entry as approved/pending/disapproved.
+
+    Precedence: disapproved > pending > approved > unknown -- a destination
+    with any disapproved country is the state that matters for triage, even
+    if other countries on the same destination are approved.
+    """
+    if dest.get("disapprovedCountries"):
+        return "disapproved"
+    if dest.get("pendingCountries"):
+        return "pending"
+    if dest.get("approvedCountries"):
+        return "approved"
+    return "unknown"
+
+
+def _mc_product_status_summary(products):
+    """Build the account-wide cascade summary: per-destination approve/
+    disapprove/pending counts, plus the top blocking issue codes.
+
+    Blocking = severity in _MC_BLOCKING_ISSUE_SEVERITIES (real suppression),
+    not every itemLevelIssue -- most entries are SUGGESTION/NOT_IMPACTED
+    advisories that do not affect whether the product currently serves.
+    """
+    from collections import Counter
+    by_destination = {}
+    issue_counter = Counter()
+    for p in products:
+        status = p.get("productStatus") or {}
+        for dest in status.get("destinationStatuses", []) or []:
+            ctx = dest.get("reportingContext", dest.get("destination", "unknown"))
+            state = _mc_destination_state(dest)
+            counts = by_destination.setdefault(
+                ctx, {"approved": 0, "pending": 0, "disapproved": 0, "unknown": 0})
+            counts[state] += 1
+        for issue in status.get("itemLevelIssues", []) or []:
+            if issue.get("severity") in _MC_BLOCKING_ISSUE_SEVERITIES:
+                issue_counter[issue.get("code", "unknown")] += 1
+    top_issues = [{"code": code, "count": n} for code, n in issue_counter.most_common(10)]
+    return {
+        "total_products": len(products),
+        "by_destination": by_destination,
+        "top_blocking_issues": top_issues,
+    }
+
+
+def _mc_print_summary(summary):
+    click.secho("\n  Summary", fg="cyan", bold=True)
+    click.echo(f"  {summary['total_products']} products total")
+    dest_rows = [{"destination": ctx, **counts}
+                 for ctx, counts in sorted(summary["by_destination"].items())]
+    print_table(dest_rows, ["destination", "approved", "pending", "disapproved", "unknown"])
+    if summary["top_blocking_issues"]:
+        click.secho("\n  Top blocking issues (DISAPPROVED/DEMOTED/ERROR)", fg="cyan", bold=True)
+        print_table(summary["top_blocking_issues"], ["code", "count"])
+
+
 @merchant.command("account")
 @click.option("--json", "as_json", is_flag=True)
 def merchant_account(as_json):
@@ -1789,14 +1864,18 @@ def merchant_status(as_json):
     print_table(rows, ["id", "severity", "title", "detail"])
 
 @merchant.command("products")
-@click.option("--limit", "-l", type=int, default=20)
+@click.option("--limit", "-l", type=int, default=None,
+              help="Max rows to show in the table (default: all). Ignored for --json, which is always the complete catalogue.")
 @click.option("--json", "as_json", is_flag=True)
 def merchant_products(limit, as_json):
-    """List products."""
+    """List products (pages the full catalogue, not just one page)."""
     enforce_allowed_caller()
-    data = mc_list_products(get_credentials(), max_results=limit, as_json=as_json)
-    products = data.get("products", [])
-    if as_json: return print_json(products)
+    products, truncated = _mc_paginate_products(mc_list_products, get_credentials())
+    if truncated:
+        click.secho("  WARNING: stopped paging at 100 pages -- catalogue may be truncated",
+                     fg="yellow", err=True)
+    if as_json:
+        return print_json({"products": products, "total": len(products), "truncated": truncated})
     def _price(attrs):
         pr = attrs.get("price") or {}
         micros = pr.get("amountMicros")
@@ -1806,8 +1885,9 @@ def merchant_products(limit, as_json):
             return f"{int(micros)/1_000_000:.2f} {pr.get('currencyCode','')}".strip()
         except (TypeError, ValueError):
             return f"{micros} {pr.get('currencyCode','')}".strip()
+    display = products[:limit] if limit else products
     rows = []
-    for p in products:
+    for p in display:
         attrs = p.get("productAttributes") or {}
         title = attrs.get("title","")
         rows.append({"id": p.get("offerId",""),
@@ -1815,18 +1895,29 @@ def merchant_products(limit, as_json):
                      "availability": attrs.get("availability",""),
                      "price": _price(attrs)})
     print_table(rows, ["id", "title", "availability", "price"])
+    if limit and len(products) > limit:
+        click.echo(f"  ... showing {limit} of {len(products)} products (omit --limit for all)")
+    else:
+        click.echo(f"  {len(products)} products total")
 
 @merchant.command("product-status")
-@click.option("--limit", "-l", type=int, default=20)
+@click.option("--limit", "-l", type=int, default=None,
+              help="Max rows to show in the table (default: all). Ignored for --json, which is always the complete catalogue.")
 @click.option("--json", "as_json", is_flag=True)
 def merchant_product_status(limit, as_json):
-    """Product approval statuses."""
+    """Product approval statuses (pages the full catalogue, with an account-wide summary)."""
     enforce_allowed_caller()
-    data = mc_list_product_statuses(get_credentials(), max_results=limit, as_json=as_json)
-    statuses = data.get("products", [])
-    if as_json: return print_json(statuses)
+    statuses, truncated = _mc_paginate_products(mc_list_product_statuses, get_credentials())
+    if truncated:
+        click.secho("  WARNING: stopped paging at 100 pages -- catalogue may be truncated",
+                     fg="yellow", err=True)
+    summary = _mc_product_status_summary(statuses)
+    if as_json:
+        return print_json({"products": statuses, "total": len(statuses),
+                            "truncated": truncated, "summary": summary})
+    display = statuses[:limit] if limit else statuses
     rows = []
-    for s in statuses:
+    for s in display:
         attrs = s.get("productAttributes") or {}
         status = s.get("productStatus") or {}
         title = attrs.get("title","")
@@ -1836,6 +1927,9 @@ def merchant_product_status(limit, as_json):
                      "destinations": ", ".join(d.get("reportingContext", d.get("destination","")) for d in dests[:3]),
                      "issues": len(status.get("itemLevelIssues", []))})
     print_table(rows, ["product_id", "title", "destinations", "issues"])
+    if limit and len(statuses) > limit:
+        click.echo(f"  ... showing {limit} of {len(statuses)} products (omit --limit for all)")
+    _mc_print_summary(summary)
 
 @merchant.command("feeds")
 @click.option("--json", "as_json", is_flag=True)

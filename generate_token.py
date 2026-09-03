@@ -19,18 +19,13 @@ from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
+# gads_lib lives alongside this script (gads-cli/gads_lib/), so it's
+# importable without installing the package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gads_lib.auth import SCOPES  # noqa: E402 -- canonical scope list, see gads_lib/auth.py
+
 PROJECT_ROOT = Path(os.environ.get("GADS_PROJECT_ROOT", Path(__file__).resolve().parent.parent))
 CREDENTIALS_DIR = Path(os.environ.get("GADS_CREDENTIALS_DIR", PROJECT_ROOT / "credentials"))
-
-SCOPES = [
-    "https://www.googleapis.com/auth/adwords",
-    "https://www.googleapis.com/auth/business.manage",
-    "https://www.googleapis.com/auth/content",
-    "https://www.googleapis.com/auth/analytics.readonly",
-    "https://www.googleapis.com/auth/analytics.edit",
-    "https://www.googleapis.com/auth/webmasters.readonly",
-    "https://www.googleapis.com/auth/datamanager",
-]
 
 CLIENT_SECRET = CREDENTIALS_DIR / "client_secret.json"
 TOKEN_OUTPUT = CREDENTIALS_DIR / "google-ads-oauth.json"

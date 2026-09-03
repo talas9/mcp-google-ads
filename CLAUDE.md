@@ -326,7 +326,8 @@ Each endpoint must use its correct base URL or requests fail.
 # Merchant Center
 ./gads merchant account
 ./gads merchant status
-./gads merchant products --limit 50
+./gads merchant products            # pages full catalogue; --limit caps rows shown, not rows fetched
+./gads merchant product-status      # full catalogue + per-destination approve/disapprove summary
 
 # GA4 reporting
 ./gads ga4 metadata

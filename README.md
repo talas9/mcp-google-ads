@@ -240,8 +240,8 @@ gads gbp delete-reply accounts/123/locations/456/reviews/789
 ```bash
 gads merchant account                # Account info
 gads merchant status                 # Account issues
-gads merchant products --limit 50    # Product listings
-gads merchant product-status         # Approval statuses
+gads merchant products               # Product listings (pages full catalogue; --limit caps rows shown)
+gads merchant product-status         # Approval statuses + account-wide cascade summary (full catalogue)
 gads merchant feeds                  # Data feeds
 gads merchant shipping               # Shipping settings
 gads merchant returns                # Return policy
