@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.0] - 2026-09-04
+
+### Added
+
+- **`gads campaign goals [--json]`** — reads the v25 unified goals schema: the account-level `goal` resource and per-campaign `campaign_goal_config` attachments, which replace the v24 `campaign_lifecycle_goal` / `customer_lifecycle_goal` resources removed in v25. gads-cli never referenced the removed resources (confirmed by grep before the `[3.11.0]` v24→v25 default bump), so the removal broke nothing here — this command is new coverage, not a migration fix. Verified live against the Talas account: one account goal (`goal_id 6547439698`, `NEW_CUSTOMER_ACQUISITION`, `additional_value = 7`), attached to campaign `23556258912` (`9-Search-HighIntent-Feb2026`) with `target_option = TARGET_ALL`.
+- **`gads campaign migration [--json]`** — reads the two v25.1 AI Max auto-migration date fields, `campaign.aca_migration_date_time` and `campaign.broad_match_migration_date_time`. Both are absent from the API response entirely (not null/empty) when no migration is scheduled; the command prints `—` for those cases. Verified live: no Talas campaign currently has either field set.
+- **`gads conversion perf` gained an `orig_value` column** — `metrics.original_conversion_value` (v25.1), the conversion value before conversion-value-rule adjustments. A gap versus the existing `value`/`metrics.conversions_value` column would indicate active value rules; verified live the two are currently equal for every conversion action on this account (no value rules in effect).
+- **`kb/google-ads.md` DG-16** (new KB section) — full field reference for the v25/v25.1 additions above, produced from an authoritative live `GoogleAdsFieldService` diff (149 fields added, 11 removed vs v24). Also documents, as verified-not-applicable-here (so future refreshes don't re-investigate): Brand Lift / Conversion Lift (7 resources + ~60 metrics, no lift study configured), the lift-only `segments.country`/`country_localized_name`/`age_range`/`gender`/`experiment_arm` trap (selectable only with `lift_measurement_*`, despite the names, NOT general-purpose geo/demographic segments), YouTube/video-only fields (Talas runs no video campaigns), `ad_group_criterion.entity_bid.item_code` (empty `selectable_with`, not reportable at all), and `recommendation.campaign_specific_app_goal_recommendation` (app campaigns only). "Coverage vs Current gads-cli" updated to move `goal`/`campaign_goal_config`/the two migration fields/`metrics.original_conversion_value` from gaps to covered.
+
+### Changed
+
+- Test suite expanded from 415 → **428 tests**, all passing.
+- Command count: 129 → **131 command paths** (125 distinct, up from 123) — `gads catalog --json` remains authoritative; README.md/CLAUDE.md/AGENTS.md/llms.txt updated accordingly.
+
+### Notes
+
+- `gads_lib/__init__.py::__version__` bumped `3.11.0` → `3.12.0`, with the pinned `tests/test_gads.py::TestVersion` assertion updated to match. `pyproject.toml` takes its version dynamically (`attr = "gads_lib.__version__"`) and needed no separate edit.
+- The `campaign goals` table resolves whichever settings block a goal actually carries (`NEW_CUSTOMER_ACQUISITION`, `RETENTION`, or `LOYALTY_RETENTION`), rather than reading only the new-customer-acquisition block, so non-acquisition goal types render their real values instead of em-dashes.
+
 ## [3.11.0] - 2026-09-04
 
 ### Changed

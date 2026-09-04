@@ -93,6 +93,19 @@ tools/gads pmax search-terms   --campaign ID [--days N] [--json]  # search-term 
 `pmax` is a separate group from the pre-existing `asset` group — `asset` mutates legacy
 campaignAssets for Search extensions, not Performance Max resources.
 
+## v25 Unified Goals / v25.1 AI Max Migration (read-only)
+
+```bash
+tools/gads campaign goals     [--json]   # account `goal` + per-campaign `campaign_goal_config` attachments
+tools/gads campaign migration [--json]   # aca_migration_date_time / broad_match_migration_date_time (absent when unscheduled)
+```
+
+`campaign goals` replaces the v24 `campaign_lifecycle_goal` / `customer_lifecycle_goal` resources,
+which are **removed** in v25 (gads-cli never referenced them, so nothing broke on the v24→v25
+bump). `campaign migration` tracks the two v25.1 AI Max auto-migration date fields; both fields are
+missing from the API response entirely (not null/empty) when no migration is scheduled. See
+`kb/google-ads.md` DG-16 for the full field reference and live-verified account state.
+
 ## Merchant Reports Sub-API
 
 `tools/gads merchant report` and `tools/gads merchant report-product-performance` use the Merchant

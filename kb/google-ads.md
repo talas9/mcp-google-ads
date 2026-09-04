@@ -1306,7 +1306,7 @@ Sources: gads-cli CLAUDE.md + `gads_lib/ads.py` + doc pages fetched 2026-06-23; 
 
 | Endpoint | gads-cli function | CLI commands |
 |---|---|---|
-| `googleAds:searchStream` | `run_gaql()` | `query`, `campaign list/status/perf`, `adgroup`, `ad`, `keyword list/search-terms`, `report`, `audience list`, `conversion list/perf` |
+| `googleAds:searchStream` | `run_gaql()` | `query`, `campaign list/status/perf/goals/migration`, `adgroup`, `ad`, `keyword list/search-terms`, `report`, `audience list`, `conversion list/perf` |
 | `googleAds:search` | `ads_search()` | Paginated queries |
 | `googleAds:mutate` (batch) | `ads_batch_mutate()` | `batch-mutate`, two-step asset flows |
 | `{resource}:mutate` | `ads_mutate()` | `campaign budget`, `keyword add/remove/negative`, `ad`, `asset`, `conversion create`, `audience create` |
@@ -1317,6 +1317,8 @@ Sources: gads-cli CLAUDE.md + `gads_lib/ads.py` + doc pages fetched 2026-06-23; 
 | `:generateKeywordIdeas` | `generate_keyword_ideas()` | `keyword ideas` |
 | `:generateKeywordForecastMetrics` | `generate_keyword_forecast()` | `keyword forecast` |
 | `:uploadClickConversions` | `ads_upload_click_conversions()` | `conversion upload` |
+
+> **v25 unified goals + AI Max migration tracking (added 2026-09-04, see DG-16):** the `goal` and `campaign_goal_config` resources (replacing the removed `campaign_lifecycle_goal` / `customer_lifecycle_goal`) are now covered via `run_gaql()` under `campaign goals`; `campaign.aca_migration_date_time` / `campaign.broad_match_migration_date_time` are covered under `campaign migration`; `metrics.original_conversion_value` is covered as a new column on `conversion perf`. All three were gaps as of the 2026-07-01 refresh (goals/migration didn't exist pre-v25; `original_conversion_value` didn't exist pre-v25.1) and are gaps no longer.
 
 ### Gaps / Not Yet Implemented
 
@@ -3057,5 +3059,69 @@ Source: title/date confirmed via Google Ads Developer Blog archive listing (`ads
 #### Smart Bidding strategy renaming — cosmetic only (2026-06-16)
 
 Google renamed two Smart Bidding display labels in the Ads UI: "Maximize conversions with a Target CPA" → **Target CPA**, and "Maximize conversion value with a Target ROAS" → **Target ROAS**. Third-party reporting (digitalapplied.com, fetched 2026-07-01) explicitly describes this as a **UI-only, no-behavioral-change rename** requiring no account or integration changes. This session could not independently confirm from an official Google source whether the underlying `biddingStrategyType` REST enum values (`MAXIMIZE_CONVERSIONS`, `TARGET_CPA`, `TARGET_ROAS` in DG-2) were touched — treat "no API schema change" as (unverified, plausible-but-not-primary-sourced). If a caller sees an unexpected 400 on these bidding fields after 2026-06-16, re-verify against the live `GoogleAdsFieldService` output rather than assuming the rename is purely cosmetic.
+
+---
+
+### DG-16. What's New in v25 / v25.1 (unified goals, AI Max migration tracking, value-rule reporting)
+
+> Authoritative field-level diff of v25 vs v24, produced by querying the live `GoogleAdsFieldService` directly (not third-party reporting): **149 fields ADDED, 11 REMOVED**. This section documents the additions gads-cli now covers, plus every surface investigated and found not applicable to the Talas account, so a future refresh does not re-investigate them from scratch. All facts below are verified live against the Talas account (customer 3552856345) on 2026-09-04 unless marked otherwise.
+
+#### REMOVED in v25 (breaking) — lifecycle goals replaced by unified goals
+
+The `campaign_lifecycle_goal` and `customer_lifecycle_goal` resources, and all their fields, are **gone in v25**. They are replaced by a unified goals schema: the `goal` and `campaign_goal_config` resources (below). **gads-cli never referenced the removed resources** — confirmed by grep of `gads_lib/` before the v24→v25 default bump (see CHANGELOG `[3.11.0]`) — so this removal broke nothing here.
+
+#### Unified goals schema — `goal` and `campaign_goal_config`
+
+Verified-selectable field names (live `GoogleAdsFieldService` + live query against the account):
+
+**`goal`** (account-level):
+- `goal.resource_name`, `goal.goal_id`, `goal.goal_type`, `goal.optimization_eligibility`, `goal.owner_customer`
+- `goal.new_customer_acquisition_goal_settings.value_settings.{value_multiplier, additional_value, high_lifetime_value_multiplier, additional_high_lifetime_value}`
+- `goal.retention_goal_settings.value_settings.{value_multiplier, additional_value, high_lifetime_value_multiplier, additional_high_lifetime_value}`
+- `goal.loyalty_retention_goal_settings.value_settings.value_multiplier` (v25.1 — loyalty retention goal)
+
+**`campaign_goal_config`** (per-campaign attachment + overrides):
+- `campaign_goal_config.{resource_name, campaign, goal, goal_type}`
+- `campaign_goal_config.campaign_new_customer_acquisition_settings.{target_option, value_settings_override.{value_multiplier, additional_value, high_lifetime_value_multiplier, additional_high_lifetime_value}}`
+- `campaign_goal_config.campaign_retention_settings.{target_option, value_settings_override.*}` (same four `value_settings_override` sub-fields as above)
+- `campaign_goal_config.campaign_loyalty_retention_settings.{enable_bid_adjustments_for_loyalty_members, show_targeted_loyalty_member_benefits_in_pla, value_settings_override.value_multiplier}`
+
+`campaign.name` / `campaign.id` select cleanly alongside `FROM campaign_goal_config` (verified live) — useful for a human-readable join without a second query.
+
+**Live state on the Talas account (verified 2026-09-04):** exactly **one** account goal exists — `goal_id 6547439698`, `goal_type NEW_CUSTOMER_ACQUISITION`, `optimization_eligibility ELIGIBLE`, with `new_customer_acquisition_goal_settings.value_settings.additional_value = 7`. It is attached via `campaign_goal_config` to campaign **23556258912** (`9-Search-HighIntent-Feb2026`) with `campaign_new_customer_acquisition_settings.target_option = TARGET_ALL`. This is materially relevant to how that Search campaign bids: `TARGET_ALL` means the new-customer-acquisition value adjustment (+7 additional value per the account goal) applies to conversions from **all** customers on that campaign, not just new ones — a bidding-strategy factor that was invisible before v25 (the old `campaign_lifecycle_goal` resource this replaces was never queried by any prior version of this CLI).
+
+CLI coverage: `gads campaign goals [--json]` (`gads_lib/cli.py::campaign_goals`, lines ~2748-2814) prints both the account `goal` and the `campaign_goal_config` attachments in one call.
+
+#### v25.1 — AI Max auto-migration tracking
+
+`campaign.aca_migration_date_time` and `campaign.broad_match_migration_date_time` — both category `ATTRIBUTE`, `dataType DATE`, selectable/filterable/sortable. They are **absent from the response entirely** (not null, not empty string — the key doesn't appear) when no migration is scheduled for that campaign, so callers must use `.get()` / key-presence checks, not falsy checks.
+
+**Live state on the Talas account (verified 2026-09-04):** no Talas campaign currently has either field set — none are scheduled for AI Max or broad-match auto-migration yet. See DG-15's "DSA → AI Max automigration" entry for the broader timeline (delayed to 2027-02).
+
+CLI coverage: `gads campaign migration [--json]` (`gads_lib/cli.py::campaign_migration`, ~line 2816) — prints `—` in the table for campaigns where the fields are absent.
+
+#### v25.1 — `metrics.original_conversion_value`
+
+`metrics.original_conversion_value` (`METRIC`, `DOUBLE`) — the conversion value **before** any conversion-value-rule adjustments. Verified selectable alongside `campaign`, `ad_group`, `ad_group_ad`, `asset_group`, `customer`, and with `segments.conversion_action_name`. A gap between `metrics.conversions_value` and `metrics.original_conversion_value` on the same row indicates value rules are actively adjusting reported value.
+
+**Live state on the Talas account (verified 2026-09-04):** `metrics.conversions_value` and `metrics.original_conversion_value` are currently **equal for every conversion action** on this account — i.e. no conversion-value rules are in effect. If they ever diverge, that's the signal a value rule was added (in the UI or elsewhere) and should be investigated, not treated as a data-quality bug.
+
+CLI coverage: added as an `orig_value` column on the existing `gads conversion perf [--days N] [--json]` command (`gads_lib/cli.py`, ~line 3641), alongside the existing conversions/value columns.
+
+#### v25.1 — `segments.loyalty_membership`
+
+`segments.loyalty_membership` (`SEGMENT`, `ENUM`) — selectable **only** with the `campaign` resource (not `ad_group`, not `customer`). **Live state on the Talas account (verified 2026-09-04):** returns `UNKNOWN` for every row, because there is no loyalty programme configured on this account. Carries no reporting signal here; not wired into any CLI command since there's nothing to show.
+
+#### Present but NOT APPLICABLE to this account
+
+Investigated and confirmed out of scope, recorded here so a future refresh doesn't re-investigate:
+
+- **Brand Lift / Conversion Lift** — 7 new resources (`lift_measurement_config`, `lift_measurement_flight`, `lift_measurement_campaign`, `lift_measurement_age_range`, `lift_measurement_device`, `lift_measurement_gender`, `lift_measurement_video`), `experiment.lift_measurement_config`, and roughly 60 new lift metrics (`metrics.incremental_conversions`, `metrics.relative_brand_lift`, `metrics.cost_per_incremental_conversion`, and their p90-bound / p-value variants). All require a configured lift study; **Talas has none configured.**
+- **Trap — do not use for general geo/demographic segmentation:** the new segments `segments.country`, `segments.country_localized_name`, `segments.age_range`, `segments.gender`, and `segments.experiment_arm` are selectable **only** with the `lift_measurement_*` resources above. Despite the names strongly suggesting general-purpose geo/demographic dimensions, they **cannot** be used on `campaign` or `geographic_view` — attempting to do so returns `UNRECOGNIZED_FIELD` / a `selectable_with` violation. Existing geo reporting continues to use `geographic_view` + its own `segments.*` fields (see DG-4), unaffected.
+- **YouTube/video only** — `metrics.youtube_comments`, `metrics.youtube_likes`, `metrics.youtube_shares`, `segments.ad_sub_format_type`, `campaign.third_party_integration_partners.conversion_attribution_integration_partners`, `customer.video_customer.third_party_integration_partners.conversion_attribution_integration_partners`. **Talas runs no video campaigns.**
+- **`ad_group_criterion.entity_bid.item_code`** — vertical-ads (e.g. real estate/travel) field. Has an **empty `selectable_with` set** in `GoogleAdsFieldService` — meaning it cannot be selected with any other field or reported at all in its current state, independent of account type.
+- **`recommendation.campaign_specific_app_goal_recommendation`** — app campaigns only. Talas runs no app campaigns.
+
+Sources: live `GoogleAdsFieldService` field-by-field diff (v24 vs v25 schema, 2026-09-04); live GAQL probes of `goal`, `campaign_goal_config`, `campaign.aca_migration_date_time`/`campaign.broad_match_migration_date_time`, `metrics.original_conversion_value`, `segments.loyalty_membership` against the Talas account (2026-09-04); `gads_lib/cli.py` (`campaign_goals`, `campaign_migration`, `conversion_perf`) as the implementation cross-check.
 
 ---

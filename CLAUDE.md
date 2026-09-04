@@ -27,7 +27,7 @@ python generate_token.py
 | `auth` | `status`, `setup`, `login`, `revoke`, `test` | Credential management and diagnostics | No |
 | `audit` | *(top-level)* `[--days N] [--format md\|json]` | 12-section structural-compliance audit — `overall_score` (0-100), `grade` (A-F), per-section scores; wraps `analyze audit` | Yes |
 | `analyze` | `landing-page`, `wasted-spend`, `ngrams`, `ad-copy`, `competition`, `rsa-lengths`, `rsa-duplicates`, `dki`, `ad-schedule`, `attribution`, `budget-is`, `qs-distribution`, `audit` | Read-only account analysis (no mutations) — 5 original + 7 gap checks + full audit | Yes (except `landing-page`) |
-| `campaign` | `list`, `status`, `budget`, `perf` | Campaign management and performance | Yes |
+| `campaign` | `list`, `status`, `budget`, `perf`, `goals`, `migration` | Campaign management and performance; `goals` reads v25 unified goal/campaign_goal_config attachments, `migration` reads v25.1 AI Max auto-migration schedule fields | Yes |
 | `adgroup` | `list`, `status`, `create` | Ad group management | Yes |
 | `ad` | `list`, `status`, `perf` | Ad management and ad-level metrics | Yes |
 | `keyword` | `list`, `add`, `remove`, `negative`, `search-terms`, `ideas`★, `forecast`★, `account-negative` (`list`/`add`) | Keyword research and management; `account-negative` mutates account-wide (all-campaigns) negative criteria, distinct from campaign-level `negative` | Yes |
@@ -162,7 +162,7 @@ GADS_SNAPSHOTS_DIR=snapshots
 gads-cli/
 ├── gads                     # Main CLI entry point (thin shim)
 ├── gads_lib/
-│   ├── cli.py              # Click command groups and entry point (129 command paths, 123 distinct)
+│   ├── cli.py              # Click command groups and entry point (131 command paths, 125 distinct)
 │   ├── config.py           # Environment-driven configuration (Ads v25 default)
 │   ├── auth.py             # OAuth credential management + refresh
 │   ├── ads.py              # Google Ads REST client + GAQL runner (v25)
@@ -184,7 +184,7 @@ gads-cli/
 │   ├── output.py           # Table/JSON formatting + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py         # Timezone-aware time helpers
 ├── kb/                     # API knowledge base (6 API docs + INDEX.md + manifest.json)
-├── tests/                  # 395 tests — offline/CI-safe, covers all service modules
+├── tests/                  # 428 tests — offline/CI-safe, covers all service modules
 ├── fetch_daily.py          # Cron-friendly daily data fetcher
 ├── generate_token.py       # Interactive OAuth token generator (6 scopes)
 ├── pyproject.toml          # Package metadata
@@ -306,6 +306,10 @@ Each endpoint must use its correct base URL or requests fail.
 ./gads query "SELECT campaign.name, campaign.status FROM campaign"
 ./gads campaign list
 ./gads campaign list --json
+
+# v25 unified goals + v25.1 AI Max migration tracking (see kb/google-ads.md DG-16)
+./gads campaign goals --json      # account goal + per-campaign campaign_goal_config attachments
+./gads campaign migration --json  # aca_migration_date_time / broad_match_migration_date_time
 
 # Performance from local database
 ./gads perf --days 7

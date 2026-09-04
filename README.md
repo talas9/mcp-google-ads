@@ -14,16 +14,16 @@ Built for AI coding agents (Claude Code, Cursor, etc.) and human operators. Ever
 
 ## Features
 
-**129 command paths across 18 groups plus 16 top-level commands** — counted from
+**131 command paths across 18 groups plus 16 top-level commands** — counted from
 `gads catalog --json`, which is the authoritative list. Six of those paths (`ads query|perf|config|refresh|snapshot|log`)
-are aliases that re-expose top-level commands under an `ads` namespace, so there are **123 distinct commands**:
+are aliases that re-expose top-level commands under an `ads` namespace, so there are **125 distinct commands**:
 
 | Group | Commands | Description |
 |-------|----------|-------------|
 | **Core** | `query`, `perf`, `config`, `refresh`, `snapshot`, `log`, `accounts`, `doctor`, `db`, `changelog`, `decisions`, `milestones`, `catalog`, `mutate`, `batch-mutate` | GAQL queries, local DB reports, campaign snapshots, structured logs, history-DB passthrough, machine-readable command catalog |
 | **Audit** | `audit [--days N] [--format md\|json]` | Top-level 12-section structural-compliance audit (0-100 score, A-F grade); wraps `analyze audit` |
 | **Analyze** | `analyze landing-page`, `wasted-spend`, `ngrams`, `ad-copy`, `competition`, `rsa-lengths`, `rsa-duplicates`, `dki`, `ad-schedule`, `attribution`, `budget-is`, `qs-distribution`, `audit` | Read-only account analysis — landing page scoring, wasted spend, n-gram clusters, ad-copy rule violations, impression-share competitive pressure, 7 gap checks, full compliance audit |
-| **Campaign** | `campaign list`, `status`, `budget`, `perf` | List, enable/pause, change budget, campaign-level metrics from API |
+| **Campaign** | `campaign list`, `status`, `budget`, `perf`, `goals`, `migration` | List, enable/pause, change budget, campaign-level metrics from API; `goals` reads v25 unified goal/campaign_goal_config attachments, `migration` reads v25.1 AI Max auto-migration schedule fields |
 | **Ad Group** | `adgroup list`, `status`, `create` | List, enable/pause, create ad groups |
 | **Ad** | `ad list`, `status`, `perf` | List ads with creatives, enable/pause, ad-level metrics |
 | **Keyword** | `keyword list`, `add`, `remove`, `negative`, `search-terms`, `ideas`★, `forecast`★, `account-negative list`, `account-negative add` | Keyword management, search terms report, Keyword Planner research; `account-negative` mutates account-wide negative criteria (all campaigns), vs. campaign-level `negative` |
@@ -149,6 +149,8 @@ gads campaign list                   # All campaigns with status/budget
 gads campaign perf --days 7          # Campaign metrics from API
 gads campaign status 12345 PAUSED    # Pause a campaign (--dry-run, --yes)
 gads campaign budget 12345 25.00     # Change daily budget (--dry-run, --yes)
+gads campaign goals                  # v25 unified goal + campaign_goal_config attachments
+gads campaign migration              # v25.1 AI Max auto-migration schedule (aca_migration_date_time / broad_match_migration_date_time)
 ```
 
 ### Ad Groups & Ads
@@ -489,7 +491,7 @@ gads-cli/
 ├── gads.sh               # Shell wrapper with .env loading
 ├── gads_lib/
 │   ├── __init__.py       # Version + public API exports
-│   ├── cli.py            # All Click command groups (129 command paths, 123 distinct)
+│   ├── cli.py            # All Click command groups (131 command paths, 125 distinct)
 │   ├── config.py         # Scope-aware env config
 │   ├── auth.py           # OAuth credential management
 │   ├── ads.py            # Google Ads REST client + GAQL + mutations (Ads v25)
@@ -506,7 +508,7 @@ gads-cli/
 │   ├── output.py         # Table/JSON formatters + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py       # Timezone-aware helpers
 ├── kb/                   # API knowledge base (6 md files + INDEX.md + manifest.json)
-├── tests/                # 395 tests (offline/CI-safe)
+├── tests/                # 428 tests (offline/CI-safe)
 ├── fetch_daily.py        # Cron-friendly daily data fetcher
 ├── generate_token.py     # OAuth token generator (6 scopes incl. webmasters.readonly)
 ├── scripts/install.sh    # Interactive installer
@@ -538,7 +540,7 @@ Uses Google REST APIs directly (`requests` + `google-auth`) — no protobuf, no 
 
 > ⚠️ These are floors for a fresh `pip install`, and the Talas operator machine does **not** meet them —
 > it runs `click` 8.1.7, `google-auth` 2.35.0, `google-auth-oauthlib` 1.2.4, `python-dotenv` 1.2.2 and
-> `pytest` 9.0.3 from a shared system environment (verified 2026-09-04). The CLI and its 395 tests run
+> `pytest` 9.0.3 from a shared system environment (verified 2026-09-04). The CLI and its 428 tests run
 > correctly on those older libraries; the floors describe the supported install, not what is deployed.
 > Upgrading that shared environment would affect other tools on the machine, so it has not been done.
 

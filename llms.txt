@@ -69,6 +69,21 @@ Merchant pagination: `merchant products` / `product-status` page the FULL catalo
 follow nextPageToken, 100-page cap). `--limit` trims the printed table only; `--json` is always
 complete and carries `truncated`. Merchant reports use MCQL, not GAQL.
 
+## Google Ads API v25 / v25.1 New Commands (2026-09-04)
+
+- `gads campaign goals [--json]` — v25 unified `goal` + per-campaign `campaign_goal_config`
+  attachments; replaces the removed v24 `campaign_lifecycle_goal` / `customer_lifecycle_goal`
+  resources (gads-cli never referenced them, so v24→v25 broke nothing).
+- `gads campaign migration [--json]` — v25.1 AI Max auto-migration schedule:
+  `campaign.aca_migration_date_time` / `campaign.broad_match_migration_date_time`. Both fields are
+  absent from the response (not null) when no migration is scheduled.
+- `gads conversion perf` gained an `orig_value` column — `metrics.original_conversion_value`
+  (v25.1), the conversion value before conversion-value-rule adjustments.
+
+Full field reference, live-verified account state, and out-of-scope surfaces (Brand/Conversion
+Lift, the lift-only `segments.country`/`age_range`/`gender` trap, YouTube-only fields, loyalty
+segment): `kb/google-ads.md` DG-16.
+
 ## Account
 
 - Client: Talas Ads (355-285-6345)
@@ -77,8 +92,8 @@ complete and carries `truncated`. Merchant reports use MCQL, not GAQL.
 
 ## Command count
 
-129 command paths across 18 groups + 16 top-level commands, of which 6 (`ads query|perf|config|
-refresh|snapshot|log`) are aliases — 123 distinct commands. `gads catalog --json` is authoritative;
+131 command paths across 18 groups + 16 top-level commands, of which 6 (`ads query|perf|config|
+refresh|snapshot|log`) are aliases — 125 distinct commands. `gads catalog --json` is authoritative;
 do not hardcode this number.
 
 ## Also see mads-cli
