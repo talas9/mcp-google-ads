@@ -2086,6 +2086,78 @@ POST customers/3552856345/assetGroupSignals:mutate
 
 Ref: https://developers.google.com/google-ads/api/docs/performance-max/asset-groups
 
+#### Reading PMax asset groups, signals, listing groups, search-term insights (GAQL)
+
+`gads pmax asset-groups|signals|listing-groups|search-terms` (added 2026-09-04). All
+four are read-only GAQL reports. Fields below were verified against the official
+v24 field reference (fetched 2026-09-04) and/or live against the Talas account
+(customer 3552856345) the same day.
+
+**`asset_group`** — https://developers.google.com/google-ads/api/fields/v24/asset_group (fetched 2026-09-04)
+Verified selectable: `asset_group.id`, `.name`, `.status`, `.primary_status`,
+`.primary_status_reasons`, `.ad_strength`, `.campaign`, `.final_urls`,
+`.final_mobile_urls`, `.path1`, `.path2`, `.resource_name` — plus the standard
+`metrics.*` (impressions, clicks, conversions, cost_micros, conversions_value
+confirmed present) and attributed `campaign.id`/`campaign.name` (campaign is
+listed as a compatible "Selectable with" resource). No unusual constraints —
+behaves like any other campaign-scoped resource; `WHERE campaign.id = N` is
+optional (omit to list every asset group in the account).
+
+**`asset_group_signal`** — https://developers.google.com/google-ads/api/fields/v24/asset_group_signal (fetched 2026-09-04)
+Full field list is **only**: `asset_group_signal.resource_name`, `.asset_group`,
+`.approval_status`, `.disapproval_reasons`, `.audience.audience`,
+`.search_theme.text`, `.local_services_id.service_id`,
+`.vertical_ads_item_group_rule_list.shared_set`. There is **no
+`asset_group_signal.id`** and **no metrics** on this resource — each row is a
+single signal (either an audience or a search theme, mutually exclusive) keyed
+by its `resource_name`. Live-verified 2026-09-04 against campaign 23566187470
+(returns audience-type signals only for that campaign).
+
+**`asset_group_listing_group_filter`** — https://developers.google.com/google-ads/api/fields/v24/asset_group_listing_group_filter (fetched 2026-09-04)
+Verified selectable: `.id`, `.type`, `.listing_source`,
+`.parent_listing_group_filter`, `.path`, `.asset_group`, `.resource_name`, and
+`.case_value` as a **oneof** with branches `product_category.category_id`/`.level`,
+`product_brand.value`, `product_channel.channel`, `product_condition.condition`,
+`product_custom_attribute.index`/`.value`, `product_item_id.value`,
+`product_type.level`/`.value`, `product_custom_attribute.*`, `webpage.conditions`,
+`retail_filter_bundle.shared_set`. Only the branch actually set on a given node
+comes back populated; the rest are absent from the row, not null-valued errors.
+Live-verified 2026-09-04: campaign 23159635175 ("Talas Shop Products") has one
+root `UNIT_INCLUDED`/`SHOPPING` filter with no case_value (catch-all); campaign
+23566187470 (feed-only PMax, no Shopping partitioning) returns 0 rows — a
+correctly empty table, not an error.
+
+**`campaign_search_term_insight`** — https://developers.google.com/google-ads/api/fields/v24/campaign_search_term_insight (fetched 2026-09-04)
+Own fields are only `.campaign_id`, `.category_label`, `.id`, `.resource_name` —
+rows are search-**category** buckets, not literal search terms. Real
+constraints, **live-verified against the account** 2026-09-04 (not just docs):
+- **Must filter to exactly one campaign.** Omitting
+  `WHERE campaign_search_term_insight.campaign_id = N` raises
+  `errorCode.searchTermInsightError = REQUIRES_FILTER_BY_SINGLE_RESOURCE`,
+  message *"campaign_search_term_insight can only be selected when filtering
+  by a single 'campaign_search_term_insight.campaign_id' in WHERE clause."*
+- **No cost metric.** Selecting `metrics.cost_micros` raises
+  `errorCode.queryError = PROHIBITED_METRIC_IN_SELECT_OR_WHERE_CLAUSE` — this
+  resource's compatible metrics are only `impressions`, `clicks`,
+  `conversions`, `conversions_from_interactions_rate`, `conversions_value`,
+  `ctr`, `search_volume` (confirmed via the field reference's own
+  "Selectable with" list — `cost_micros` is absent from it).
+  `segments.date` works normally with just the campaign_id filter (a
+  category-level query with `segments.date BETWEEN ... AND campaign_search_term_insight.campaign_id = N`
+  succeeds without needing to also select or filter by `.id`).
+- **`segments.search_term` (the literal term text, as opposed to the category
+  label) requires an *additional* single-value filter** —
+  `WHERE campaign_search_term_insight.id = <id>` — or it raises the same
+  `REQUIRES_FILTER_BY_SINGLE_RESOURCE` error with message *"segments.search_term
+  can only be selected when filtering by a single
+  'campaign_search_term_insight.id' in WHERE clause."* `gads pmax search-terms`
+  deliberately stays at the category level (no `.id` filter available) and does
+  not select `segments.search_term`; per-category drill-down to literal terms
+  is a documented gap, not implemented.
+- Historical data available starting March 2023 (per
+  https://developers.google.com/google-ads/api/docs/insights/overview,
+  fetched 2026-09-04).
+
 ---
 
 ### DG-8. Conversion Tracking

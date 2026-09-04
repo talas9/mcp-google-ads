@@ -2441,6 +2441,11 @@ def data_manager_group():
     """Data Manager API — modern events/audience ingestion (events:ingest, audienceMembers:ingest)."""
     pass
 
+@cli.group("pmax")
+def pmax_group():
+    """Performance Max asset groups, signals, listing groups, search-term insights (read-only)."""
+    pass
+
 
 # ── Helpers ──────────────────────────────────────────────────
 
@@ -3700,6 +3705,195 @@ def report_search_terms(days, campaign_id, min_clicks, as_json):
     # Delegate to keyword search-terms
     ctx = click.get_current_context()
     ctx.invoke(keyword_search_terms, days=days, campaign_id=campaign_id, min_clicks=min_clicks, as_json=as_json)
+
+
+# ── Performance Max commands (read-only) ──────────────────────
+# KB: kb/google-ads.md § Performance Max reporting resources (asset_group,
+# asset_group_signal, asset_group_listing_group_filter,
+# campaign_search_term_insight) | verified live 2026-09-04
+
+@pmax_group.command("asset-groups")
+@click.option("--campaign", "-c", "campaign_id", default=None, help="Filter to one campaign ID.")
+@click.option("--json", "as_json", is_flag=True)
+def pmax_asset_groups(campaign_id, as_json):
+    """List Performance Max asset groups with status, ad strength, and performance.
+
+    Read-only. Costs are rendered in AED (cost_micros / 1e6, rounded 2dp).
+    """
+    where = f"WHERE campaign.id = {campaign_id}" if campaign_id else ""
+    results = run_gaql(get_credentials(), f"""
+        SELECT asset_group.id, asset_group.name, asset_group.status,
+               asset_group.primary_status, asset_group.primary_status_reasons,
+               asset_group.ad_strength, campaign.id, campaign.name,
+               metrics.impressions, metrics.clicks, metrics.conversions,
+               metrics.cost_micros, metrics.conversions_value
+        FROM asset_group {where} ORDER BY campaign.name, asset_group.name""")
+    if as_json:
+        return print_json(results)
+    rows = []
+    for r in results:
+        ag, c, m = r.get("assetGroup", {}), r.get("campaign", {}), r.get("metrics", {})
+        cost = int(m.get("costMicros", 0)) / 1e6
+        rows.append({
+            "campaign": c.get("name", ""), "asset_group": ag.get("name", ""),
+            "id": ag.get("id", ""), "status": ag.get("status", ""),
+            "primary_status": ag.get("primaryStatus", ""),
+            "reasons": ",".join(ag.get("primaryStatusReasons", [])),
+            "ad_strength": ag.get("adStrength", ""),
+            "impr": m.get("impressions", 0), "clicks": m.get("clicks", 0),
+            "conv": m.get("conversions", 0), "cost": round(cost, 2),
+            "conv_value": m.get("conversionsValue", 0),
+        })
+    print_table(rows, ["campaign", "asset_group", "id", "status", "primary_status",
+                        "reasons", "ad_strength", "impr", "clicks", "conv", "cost", "conv_value"])
+
+@pmax_group.command("signals")
+@click.option("--campaign", "-c", "campaign_id", default=None, help="Filter to one campaign ID.")
+@click.option("--json", "as_json", is_flag=True)
+def pmax_signals(campaign_id, as_json):
+    """List Performance Max asset group signals (audience + search theme).
+
+    Read-only. asset_group_signal has no numeric id or metrics of its own —
+    each row is identified by its resource_name (verified against the v24
+    field reference 2026-09-04: only resource_name, asset_group,
+    approval_status, disapproval_reasons, audience.audience,
+    search_theme.text, local_services_id.service_id, and
+    vertical_ads_item_group_rule_list.shared_set exist on this resource).
+    """
+    where = f"WHERE campaign.id = {campaign_id}" if campaign_id else ""
+    results = run_gaql(get_credentials(), f"""
+        SELECT asset_group_signal.resource_name, asset_group_signal.approval_status,
+               asset_group_signal.disapproval_reasons,
+               asset_group_signal.audience.audience, asset_group_signal.search_theme.text,
+               asset_group.id, asset_group.name, campaign.id, campaign.name
+        FROM asset_group_signal {where} ORDER BY campaign.name, asset_group.name""")
+    if as_json:
+        return print_json(results)
+    rows = []
+    for r in results:
+        sig, ag, c = r.get("assetGroupSignal", {}), r.get("assetGroup", {}), r.get("campaign", {})
+        audience = sig.get("audience", {}).get("audience", "")
+        search_theme = sig.get("searchTheme", {}).get("text", "")
+        rows.append({
+            "campaign": c.get("name", ""), "asset_group": ag.get("name", ""),
+            "signal": audience or search_theme or "",
+            "type": "audience" if audience else ("search_theme" if search_theme else ""),
+            "approval_status": sig.get("approvalStatus", ""),
+            "disapproval_reasons": ",".join(sig.get("disapprovalReasons", [])),
+        })
+    print_table(rows, ["campaign", "asset_group", "type", "signal", "approval_status", "disapproval_reasons"])
+
+@pmax_group.command("listing-groups")
+@click.option("--campaign", "-c", "campaign_id", default=None, help="Filter to one campaign ID.")
+@click.option("--json", "as_json", is_flag=True)
+def pmax_listing_groups(campaign_id, as_json):
+    """List Performance Max asset group listing group filters (product partitions).
+
+    Read-only. Fields verified against the v24 field reference 2026-09-04.
+    case_value is a oneof (product_category, product_brand, product_channel,
+    product_condition, product_item_id, product_type, product_custom_attribute,
+    webpage, retail_filter_bundle) — only the branch that was actually set on
+    a given filter node is populated; the rest come back empty.
+    """
+    where = f"WHERE campaign.id = {campaign_id}" if campaign_id else ""
+    results = run_gaql(get_credentials(), f"""
+        SELECT asset_group_listing_group_filter.id, asset_group_listing_group_filter.type,
+               asset_group_listing_group_filter.listing_source,
+               asset_group_listing_group_filter.parent_listing_group_filter,
+               asset_group_listing_group_filter.case_value.product_category.category_id,
+               asset_group_listing_group_filter.case_value.product_category.level,
+               asset_group_listing_group_filter.case_value.product_channel.channel,
+               asset_group_listing_group_filter.case_value.product_condition.condition,
+               asset_group_listing_group_filter.case_value.product_brand.value,
+               asset_group_listing_group_filter.case_value.product_item_id.value,
+               asset_group_listing_group_filter.case_value.product_type.level,
+               asset_group_listing_group_filter.case_value.product_type.value,
+               asset_group_listing_group_filter.case_value.product_custom_attribute.index,
+               asset_group_listing_group_filter.case_value.product_custom_attribute.value,
+               asset_group.id, asset_group.name, campaign.id, campaign.name
+        FROM asset_group_listing_group_filter {where}
+        ORDER BY campaign.name, asset_group.name""")
+    if as_json:
+        return print_json(results)
+    rows = []
+    for r in results:
+        f, ag, c = r.get("assetGroupListingGroupFilter", {}), r.get("assetGroup", {}), r.get("campaign", {})
+        cv = f.get("caseValue", {})
+        dim = ""
+        if cv.get("productCategory"):
+            dim = f"category:{cv['productCategory'].get('categoryId','')}"
+        elif cv.get("productBrand"):
+            dim = f"brand:{cv['productBrand'].get('value','')}"
+        elif cv.get("productChannel"):
+            dim = f"channel:{cv['productChannel'].get('channel','')}"
+        elif cv.get("productCondition"):
+            dim = f"condition:{cv['productCondition'].get('condition','')}"
+        elif cv.get("productItemId"):
+            dim = f"item_id:{cv['productItemId'].get('value','')}"
+        elif cv.get("productType"):
+            dim = f"type:{cv['productType'].get('value','')}"
+        elif cv.get("productCustomAttribute"):
+            dim = f"custom_attr[{cv['productCustomAttribute'].get('index','')}]:{cv['productCustomAttribute'].get('value','')}"
+        rows.append({
+            "campaign": c.get("name", ""), "asset_group": ag.get("name", ""),
+            "id": f.get("id", ""), "type": f.get("type", ""),
+            "listing_source": f.get("listingSource", ""),
+            "dimension": dim or "(everything else)",
+            "parent": f.get("parentListingGroupFilter", ""),
+        })
+    print_table(rows, ["campaign", "asset_group", "id", "type", "listing_source", "dimension", "parent"])
+
+@pmax_group.command("search-terms")
+@click.option("--campaign", "-c", "campaign_id", required=True,
+              help="REQUIRED — campaign_search_term_insight only accepts a single-campaign filter "
+                   "(verified live: omitting it raises REQUIRES_FILTER_BY_SINGLE_RESOURCE).")
+@click.option("--days", "-d", type=int, default=30)
+@click.option("--json", "as_json", is_flag=True)
+def pmax_search_terms(campaign_id, days, as_json):
+    """Performance Max search-term category insights for one campaign.
+
+    Read-only. Real constraints verified live against this account 2026-09-04:
+      - campaign_search_term_insight REQUIRES filtering to a single
+        campaign_search_term_insight.campaign_id (--campaign is required here;
+        omitting it raises errorCode REQUIRES_FILTER_BY_SINGLE_RESOURCE).
+      - This resource has NO cost metric — selecting metrics.cost_micros
+        raises queryError PROHIBITED_METRIC_IN_SELECT_OR_WHERE_CLAUSE.
+      - Rows are search-CATEGORIES (category_label), not literal search
+        terms: segments.search_term can only be added by also filtering
+        WHERE campaign_search_term_insight.id = <single id> (verified live:
+        errorCode REQUIRES_FILTER_BY_SINGLE_RESOURCE, "segments.search_term
+        can only be selected when filtering by a single
+        'campaign_search_term_insight.id'") — that per-category drill-down
+        is out of scope for this list command.
+      - Historical data is available starting March 2023 (per Google's
+        Insights docs).
+    Default window is the last 30 days ending yesterday (never same-day —
+    attribution lag), same convention as `gads report geo`.
+    """
+    from datetime import datetime, timedelta
+    d_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    d_to = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    results = run_gaql(get_credentials(), f"""
+        SELECT campaign_search_term_insight.campaign_id,
+               campaign_search_term_insight.category_label,
+               campaign_search_term_insight.id,
+               metrics.impressions, metrics.clicks, metrics.conversions, metrics.conversions_value
+        FROM campaign_search_term_insight
+        WHERE segments.date BETWEEN '{d_from}' AND '{d_to}'
+          AND campaign_search_term_insight.campaign_id = {campaign_id}
+        ORDER BY metrics.clicks DESC""")
+    if as_json:
+        return print_json(results)
+    rows = []
+    for r in results:
+        insight, m = r.get("campaignSearchTermInsight", {}), r.get("metrics", {})
+        rows.append({
+            "category": insight.get("categoryLabel", "") or "(uncategorized)",
+            "id": insight.get("id", ""),
+            "impr": m.get("impressions", 0), "clicks": m.get("clicks", 0),
+            "conv": m.get("conversions", 0), "conv_value": m.get("conversionsValue", 0),
+        })
+    print_table(rows, ["category", "id", "impr", "clicks", "conv", "conv_value"])
 
 
 # ── Generic mutate commands (escape hatch) ───────────────────
