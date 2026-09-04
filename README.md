@@ -452,8 +452,8 @@ gads-cli/
 │   ├── db.py             # SQLite connection manager
 │   ├── output.py         # Table/JSON formatters + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py       # Timezone-aware helpers
-├── kb/                   # API knowledge base (5 md files + INDEX.md + manifest.json)
-├── tests/                # 373 tests (offline/CI-safe)
+├── kb/                   # API knowledge base (6 md files + INDEX.md + manifest.json)
+├── tests/                # 382 tests (offline/CI-safe)
 ├── fetch_daily.py        # Cron-friendly daily data fetcher
 ├── generate_token.py     # OAuth token generator (6 scopes incl. webmasters.readonly)
 ├── scripts/install.sh    # Interactive installer
