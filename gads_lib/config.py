@@ -53,9 +53,27 @@ if load_dotenv is not None:
 PROJECT_ROOT = SCOPE_ROOT  # alias for backward compat
 CONFIG_HOME = GLOBAL_HOME
 
-DB_PATH = Path(os.environ.get("GADS_DB_PATH", SCOPE_ROOT / "data" / "gads.db"))
-CREDS_PATH = Path(os.environ.get("GADS_CREDENTIALS_PATH", SCOPE_ROOT / "credentials" / "google-ads-oauth.json"))
-SNAPSHOTS_DIR = Path(os.environ.get("GADS_SNAPSHOTS_DIR", SCOPE_ROOT / "snapshots"))
+def _scoped_path(env_var, default):
+    """Resolve a path env var, anchoring RELATIVE values to the scope root.
+
+    .env files in this project set relative values (e.g.
+    GADS_DB_PATH=data/talas_ads.db). Passing those straight to Path() resolves
+    them against the CURRENT WORKING DIRECTORY, so the CLI found the database
+    only when invoked from the project root and reported it missing from
+    anywhere else -- including cron, which is why `gads doctor` intermittently
+    showed a database FAIL against a database that was present the whole time.
+    An absolute value is always honoured as given.
+    """
+    raw = os.environ.get(env_var)
+    if not raw:
+        return Path(default)
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else SCOPE_ROOT / p
+
+
+DB_PATH = _scoped_path("GADS_DB_PATH", SCOPE_ROOT / "data" / "gads.db")
+CREDS_PATH = _scoped_path("GADS_CREDENTIALS_PATH", SCOPE_ROOT / "credentials" / "google-ads-oauth.json")
+SNAPSHOTS_DIR = _scoped_path("GADS_SNAPSHOTS_DIR", SCOPE_ROOT / "snapshots")
 
 # ── Google Ads ───────────────────────────────────────────────
 DEV_TOKEN = os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN", "")

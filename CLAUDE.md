@@ -184,7 +184,7 @@ gads-cli/
 │   ├── output.py           # Table/JSON formatting + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py         # Timezone-aware time helpers
 ├── kb/                     # API knowledge base (6 API docs + INDEX.md + manifest.json)
-├── tests/                  # 384 tests — offline/CI-safe, covers all service modules
+├── tests/                  # 395 tests — offline/CI-safe, covers all service modules
 ├── fetch_daily.py          # Cron-friendly daily data fetcher
 ├── generate_token.py       # Interactive OAuth token generator (6 scopes)
 ├── pyproject.toml          # Package metadata
@@ -273,6 +273,11 @@ Each endpoint must use its correct base URL or requests fail.
 
 ```bash
 # Verify setup
+# NOTE: `database: fail` means the local SQLite file is not built yet, NOT data loss.
+# The DB is a local artifact rebuilt from the git-tracked data/sql/ dumps:
+#   tools/db-rebuild.sh
+# A relative GADS_DB_PATH is anchored to the project root, so this check is
+# cwd-independent (it used to fail spuriously under cron for that reason).
 ./gads doctor
 ./gads auth status --json
 
@@ -280,7 +285,7 @@ Each endpoint must use its correct base URL or requests fail.
 ./gads catalog --json
 
 # History DB (read-only SELECT)
-./gads db "SELECT * FROM campaign_performance ORDER BY date DESC LIMIT 10" --json
+./gads db "SELECT * FROM daily_performance ORDER BY date DESC LIMIT 10" --json
 ./gads changelog --json -n 20
 ./gads decisions --json
 ./gads milestones --json
@@ -372,7 +377,10 @@ Each endpoint must use its correct base URL or requests fail.
 
 # GA4 batch and pivot reports
 ./gads ga4 batch-report
-./gads ga4 pivot-report --pivot-dimension country --dimensions date --metrics activeUsers
+# --dimensions must CONTAIN the --pivot-dimension: GA4 rejects a pivot on a field
+# that is not in the request's dimension list ("Field X exists in pivot but is not
+# defined in input dimensions list"). The CLI builds one pivot from --pivot-dimension.
+./gads ga4 pivot-report --pivot-dimension country --dimensions country --metrics activeUsers
 ./gads ga4 check-compatibility --dimensions date,country --metrics activeUsers,sessions
 
 # GA4 key events (conversions). Write ops need analytics.edit scope.

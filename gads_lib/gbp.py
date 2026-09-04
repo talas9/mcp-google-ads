@@ -375,6 +375,22 @@ def gbp_batch_get_reviews(creds, account_name, location_names, page_size=50, as_
 
 # ── Local Posts CRUD ─────────────────────────────────────────
 
+def _bare_location_id(location_id):
+    """Return a bare numeric location id, accepting either input form.
+
+    The v4 local-post endpoints build their parent as
+    "accounts/X/locations/<id>", so a caller passing the full "locations/123"
+    resource name (which the sibling commands `gbp location` / `gbp reviews`
+    accept, via cli._normalize_location) produced
+    "accounts/X/locations/locations/123" and a hard 404. Accept both forms so
+    the group behaves consistently.
+    """
+    loc = str(location_id).strip()
+    if loc.startswith("locations/"):
+        loc = loc[len("locations/"):]
+    return loc
+
+
 # KB: kb/gbp.md § local-posts | https://developers.google.com/my-business/reference/rest/v4/accounts.locations.localPosts/list
 def gbp_list_local_posts(creds, account_name, location_id, page_size=20, as_json=False):
     """List local posts for a location.
@@ -383,7 +399,7 @@ def gbp_list_local_posts(creds, account_name, location_id, page_size=20, as_json
 
     Returns raw API response.
     """
-    parent = f"{account_name}/locations/{location_id}"
+    parent = f"{account_name}/locations/{_bare_location_id(location_id)}"
     return request_json(
         "GET",
         f"{GBP_V4_BASE}/{parent}/localPosts",
@@ -404,7 +420,7 @@ def gbp_create_local_post(creds, account_name, location_id, post_body, as_json=F
 
     Returns raw API response.
     """
-    parent = f"{account_name}/locations/{location_id}"
+    parent = f"{account_name}/locations/{_bare_location_id(location_id)}"
     return request_json(
         "POST",
         f"{GBP_V4_BASE}/{parent}/localPosts",
@@ -427,7 +443,7 @@ def gbp_delete_local_post(creds, account_name, location_id, post_id, as_json=Fal
 
     Returns raw API response.
     """
-    parent = f"{account_name}/locations/{location_id}"
+    parent = f"{account_name}/locations/{_bare_location_id(location_id)}"
     return request_json(
         "DELETE",
         f"{GBP_V4_BASE}/{parent}/localPosts/{post_id}",

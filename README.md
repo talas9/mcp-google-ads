@@ -128,6 +128,20 @@ gads snapshot pre-change --save-file # Snapshot configs before mutations
 gads log "action" "details"          # Append to changelog
 ```
 
+> **The `database` check and the local DB.** `gads doctor` reports `database: fail` when the
+> SQLite file at `GADS_DB_PATH` is absent. That file is a **local, rebuildable artifact and is not
+> in git** — the git-tracked source of truth is the text SQL dumps under `data/sql/`. On a fresh
+> checkout it legitimately does not exist until you regenerate it:
+>
+> ```bash
+> tools/db-rebuild.sh          # rebuild data/talas_ads.db from data/sql/
+> ```
+>
+> So a failing `database` check on a new clone means "not built yet", not "data lost" — restore
+> nothing, just rebuild. Set `GADS_DB_PATH` to point somewhere else if you keep the DB outside the
+> project. A **relative** `GADS_DB_PATH` (as `.env` uses) is resolved against the project root, not
+> your current directory, so `doctor` gives the same answer from anywhere, cron included.
+
 ### Campaign Management
 
 ```bash
@@ -492,7 +506,7 @@ gads-cli/
 │   ├── output.py         # Table/JSON formatters + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py       # Timezone-aware helpers
 ├── kb/                   # API knowledge base (6 md files + INDEX.md + manifest.json)
-├── tests/                # 384 tests (offline/CI-safe)
+├── tests/                # 395 tests (offline/CI-safe)
 ├── fetch_daily.py        # Cron-friendly daily data fetcher
 ├── generate_token.py     # OAuth token generator (6 scopes incl. webmasters.readonly)
 ├── scripts/install.sh    # Interactive installer
@@ -524,7 +538,7 @@ Uses Google REST APIs directly (`requests` + `google-auth`) — no protobuf, no 
 
 > ⚠️ These are floors for a fresh `pip install`, and the Talas operator machine does **not** meet them —
 > it runs `click` 8.1.7, `google-auth` 2.35.0, `google-auth-oauthlib` 1.2.4, `python-dotenv` 1.2.2 and
-> `pytest` 9.0.3 from a shared system environment (verified 2026-09-04). The CLI and its 384 tests run
+> `pytest` 9.0.3 from a shared system environment (verified 2026-09-04). The CLI and its 395 tests run
 > correctly on those older libraries; the floors describe the supported install, not what is deployed.
 > Upgrading that shared environment would affect other tools on the machine, so it has not been done.
 

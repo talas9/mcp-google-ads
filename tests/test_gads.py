@@ -3740,3 +3740,154 @@ class TestAssetListQuery:
         assert "WHERE asset.type = 'TEXT'" in query, (
             f"--type must produce an uppercased equality filter; got: {query}"
         )
+
+
+class TestScopedPathResolution:
+    """Regression: relative path env vars must anchor to the scope root, not cwd.
+
+    .env sets relative values (GADS_DB_PATH=data/talas_ads.db). Resolving those
+    against the current working directory made `gads doctor` report a database
+    FAIL from any cwd other than the project root -- including cron -- for a
+    database that existed the whole time.
+    """
+
+    def test_relative_value_anchors_to_scope_root(self, tmp_path):
+        from gads_lib.config import _scoped_path, SCOPE_ROOT
+
+        with patch.dict(os.environ, {"GADS_DB_PATH": "data/talas_ads.db"}):
+            assert _scoped_path("GADS_DB_PATH", "unused") == SCOPE_ROOT / "data" / "talas_ads.db"
+
+    def test_absolute_value_is_honoured_as_given(self, tmp_path):
+        from gads_lib.config import _scoped_path
+
+        abs_db = tmp_path / "elsewhere.db"
+        with patch.dict(os.environ, {"GADS_DB_PATH": str(abs_db)}):
+            assert _scoped_path("GADS_DB_PATH", "unused") == abs_db
+
+    def test_unset_falls_back_to_default(self):
+        from gads_lib.config import _scoped_path
+
+        env = {k: v for k, v in os.environ.items() if k != "GADS_DB_PATH"}
+        with patch.dict(os.environ, env, clear=True):
+            assert _scoped_path("GADS_DB_PATH", "/tmp/default.db") == Path("/tmp/default.db")
+
+
+class TestDoctorDatabaseDetail:
+    """The doctor DB fail detail must say how to produce the database."""
+
+    def _database_check(self, exists):
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+
+        with patch("gads_lib.cli.DB_PATH") as fake_db:
+            fake_db.exists.return_value = exists
+            fake_db.__str__ = lambda self: "/proj/data/talas_ads.db"
+            result = CliRunner().invoke(cli, ["doctor", "--json"])
+        payload = json.loads(result.output)
+        return next(c for c in payload["checks"] if c["check"] == "database")
+
+    def test_fail_detail_names_the_rebuild_script(self):
+        check = self._database_check(exists=False)
+        assert check["status"] == "fail"
+        assert "db-rebuild.sh" in check["detail"], check["detail"]
+        assert "GADS_DB_PATH" in check["detail"], check["detail"]
+
+    def test_ok_detail_is_just_the_path(self):
+        check = self._database_check(exists=True)
+        assert check["status"] == "ok"
+        assert "db-rebuild.sh" not in check["detail"], check["detail"]
+
+
+class TestGbpBareLocationId:
+    """Regression: v4 local-post endpoints must accept both location forms."""
+
+    def test_strips_locations_prefix(self):
+        from gads_lib.gbp import _bare_location_id
+
+        assert _bare_location_id("locations/17303088970776446827") == "17303088970776446827"
+
+    def test_bare_id_passes_through(self):
+        from gads_lib.gbp import _bare_location_id
+
+        assert _bare_location_id("17303088970776446827") == "17303088970776446827"
+
+    def test_both_forms_build_the_same_parent(self):
+        from gads_lib import gbp
+
+        seen = []
+
+        def fake_request_json(method, url, **kw):
+            seen.append(url)
+            return {"localPosts": []}
+
+        with patch("gads_lib.gbp.request_json", side_effect=fake_request_json), \
+             patch("gads_lib.gbp.get_bearer_headers", return_value={}):
+            gbp.gbp_list_local_posts(MagicMock(), "accounts/1", "locations/99")
+            gbp.gbp_list_local_posts(MagicMock(), "accounts/1", "99")
+
+        assert seen[0] == seen[1], seen
+        assert "locations/locations" not in seen[0], seen[0]
+        assert "accounts/1/locations/99/localPosts" in seen[0], seen[0]
+
+
+class TestGbpPerfAllMissingValues:
+    """Regression: perf-all crashed summing a not-yet-backfilled (None) metric.
+
+    gbp_multi_daily_metrics returns value=None when GBP has not backfilled a
+    date yet, which is deliberately distinct from a measured zero. `total += v`
+    raised TypeError and the command failed outright. The fix must render the
+    gap without turning it into a zero.
+    """
+
+    def _run(self, per_location):
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+
+        accounts = {"accounts": [{"name": "accounts/1", "type": "LOCATION_GROUP"}]}
+        locations = {"locations": [{"name": f"locations/{i}", "title": t}
+                                   for i, t in enumerate(per_location)]}
+
+        def fake_metrics(creds, location_name, metrics, start, end):
+            idx = int(location_name.split("/")[1])
+            title = list(per_location)[idx]
+            return {"CALL_CLICKS": per_location[title]}
+
+        with patch("gads_lib.cli.gbp_list_accounts", return_value=accounts), \
+             patch("gads_lib.cli.gbp_list_locations", return_value=locations), \
+             patch("gads_lib.cli.gbp_multi_daily_metrics", side_effect=fake_metrics), \
+             patch("gads_lib.cli.get_credentials", return_value=MagicMock()), \
+             patch("gads_lib.cli.enforce_allowed_caller", return_value=None):
+            return CliRunner().invoke(cli, ["gbp", "perf-all", "-d", "2", "-m", "CALL_CLICKS"])
+
+    def test_none_value_does_not_crash(self):
+        result = self._run({
+            "A": [{"date": "2026-09-01", "value": 5}, {"date": "2026-09-02", "value": None}],
+            "B": [{"date": "2026-09-01", "value": 2}, {"date": "2026-09-02", "value": None}],
+        })
+        assert result.exit_code == 0, result.output
+        assert "TypeError" not in result.output
+
+    def test_missing_is_not_rendered_as_zero_and_total_flags_it(self):
+        result = self._run({
+            "A": [{"date": "2026-09-01", "value": 5}, {"date": "2026-09-02", "value": None}],
+            "B": [{"date": "2026-09-01", "value": 2}, {"date": "2026-09-02", "value": 3}],
+        })
+        assert result.exit_code == 0, result.output
+        lines = {ln.split()[0]: ln for ln in result.output.splitlines() if ln.strip().startswith("2026-")}
+        complete = lines["2026-09-01"]
+        partial = lines["2026-09-02"]
+        # Complete date: both locations present, plain total.
+        assert "7" in complete, complete
+        assert "—" not in complete, complete
+        # Partial date: the gap is a marker, NOT a zero, and the total is flagged.
+        assert "—" in partial, partial
+        assert "3*" in partial, partial
+
+    def test_all_present_has_no_marker_or_footnote(self):
+        result = self._run({
+            "A": [{"date": "2026-09-01", "value": 5}],
+            "B": [{"date": "2026-09-01", "value": 2}],
+        })
+        assert result.exit_code == 0, result.output
+        assert "—" not in result.output, result.output
+        assert "not backfilled yet" not in result.output, result.output

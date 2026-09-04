@@ -850,7 +850,14 @@ def doctor(as_json):
     checks = [
         {"check": "scope", "status": "ok", "detail": f"{SCOPE_TYPE} → {SCOPE_ROOT}"},
         {"check": "credentials", "status": "ok" if CREDS_PATH.exists() else "fail", "detail": str(CREDS_PATH)},
-        {"check": "database", "status": "ok" if DB_PATH.exists() else "fail", "detail": str(DB_PATH)},
+        # The DB is a local, rebuildable artifact -- not something to restore from
+        # a backup. On a fresh checkout it legitimately does not exist until
+        # db-rebuild.sh regenerates it from the git-tracked data/sql/ dumps, so
+        # the fail detail has to say how to produce it, not just where it isn't.
+        {"check": "database",
+         "status": "ok" if DB_PATH.exists() else "fail",
+         "detail": (str(DB_PATH) if DB_PATH.exists()
+                    else f"{DB_PATH} missing — run tools/db-rebuild.sh (talas-ads) or set GADS_DB_PATH")},
         {"check": "developer_token", "status": "ok" if DEV_TOKEN else "fail", "detail": "set" if DEV_TOKEN else "missing — set GOOGLE_ADS_DEVELOPER_TOKEN"},
         {"check": "customer_id", "status": "ok" if CUSTOMER_ID else "fail", "detail": "set" if CUSTOMER_ID else "missing — set GOOGLE_ADS_CUSTOMER_ID"},
         {"check": "login_customer_id", "status": "ok" if LOGIN_CUSTOMER_ID else "warn", "detail": "set" if LOGIN_CUSTOMER_ID else "missing (optional for non-MCC)"},
@@ -1397,6 +1404,12 @@ def gbp_delete_reply_cmd(review_name, account_name):
 
 DEFAULT_PERF_METRICS = "BUSINESS_DIRECTION_REQUESTS,CALL_CLICKS,WEBSITE_CLICKS"
 
+# Rendering markers for GBP performance tables. A GBP daily metric can be
+# "not backfilled yet", which the API signals by omitting the value entirely --
+# distinct from a measured zero. Never render that as 0.
+MISSING_MARKER = "—"
+PARTIAL_MARKER = "*"
+
 
 def _normalize_location(loc):
     """Prepend 'locations/' if only an ID is provided."""
@@ -1488,21 +1501,41 @@ def gbp_perf_all(days, metrics, as_json):
         parts = name.replace("Talas Tesla Auto Parts - ", "").replace("Talas Tesla Auto Parts", "")
         short_names[name] = parts.strip() or name[:15]
 
+    # gbp_multi_daily_metrics returns value=None for a date a metric has not
+    # backfilled yet, which is deliberately NOT the same as a measured zero (see
+    # the long comment in gads_lib/gbp.py -- defaulting it to 0 is what caused
+    # the 2026-08-29 false-zero incident). Summing it raised
+    # "TypeError: unsupported operand type(s) for +=: 'int' and 'NoneType'" and
+    # made this command fail outright. Render it as a marker instead, keep it out
+    # of the total, and flag any total that is missing a contributor.
+    any_missing = False
     for metric in metric_list:
         click.secho(f"\n  {metric}", fg="white", bold=True)
         rows = []
         for d in sorted(all_dates):
             row = {"date": d}
             total = 0
+            missing_here = False
             for loc_title in loc_names:
                 vals = {v["date"]: v["value"] for v in all_results[loc_title].get(metric, [])}
-                v = vals.get(d, 0)
-                row[short_names[loc_title]] = v
-                total += v
-            row["TOTAL"] = total
+                v = vals.get(d)
+                if v is None:
+                    row[short_names[loc_title]] = MISSING_MARKER
+                    missing_here = True
+                else:
+                    row[short_names[loc_title]] = v
+                    total += v
+            row["TOTAL"] = f"{total}{PARTIAL_MARKER}" if missing_here else total
+            any_missing = any_missing or missing_here
             rows.append(row)
         cols = ["date"] + [short_names[t] for t in loc_names] + ["TOTAL"]
         print_table(rows, cols)
+
+    if any_missing:
+        click.secho(
+            f"\n  {MISSING_MARKER} = not backfilled yet (NOT a measured zero); "
+            f"{PARTIAL_MARKER} = total omits at least one location.",
+            fg="yellow", err=True)
 
 
 @gbp.command("search-keywords")

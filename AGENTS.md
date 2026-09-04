@@ -42,7 +42,7 @@ On failure, when `--json` is in effect, stderr carries:
 **Local history DB (read-only SELECT):**
 
 ```bash
-tools/gads db "SELECT * FROM campaign_performance ORDER BY date DESC LIMIT 10" --json
+tools/gads db "SELECT * FROM daily_performance ORDER BY date DESC LIMIT 10" --json
 ```
 
 Any mutating SQL (INSERT/UPDATE/DELETE/DROP/…) is rejected with exit code 6.
