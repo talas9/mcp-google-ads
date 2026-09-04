@@ -2745,6 +2745,125 @@ def campaign_perf(days, as_json):
                      "ctr": m.get("ctr",""), "cvr": m.get("conversionsFromInteractionsRate","")})
     print_table(rows, ["name", "impr", "clicks", "conv", "cost", "cpa", "ctr", "cvr"])
 
+@campaign.command("goals")
+@click.option("--json", "as_json", is_flag=True)
+def campaign_goals(as_json):
+    """Account and campaign unified-goals configuration (v25; replaced v24 lifecycle-goal resources)."""
+    creds = get_credentials()
+    goal_results = run_gaql(creds, """
+        SELECT goal.resource_name, goal.goal_id, goal.goal_type, goal.optimization_eligibility,
+               goal.new_customer_acquisition_goal_settings.value_settings.value_multiplier,
+               goal.new_customer_acquisition_goal_settings.value_settings.additional_value,
+               goal.new_customer_acquisition_goal_settings.value_settings.high_lifetime_value_multiplier,
+               goal.new_customer_acquisition_goal_settings.value_settings.additional_high_lifetime_value,
+               goal.retention_goal_settings.value_settings.value_multiplier,
+               goal.retention_goal_settings.value_settings.additional_value,
+               goal.loyalty_retention_goal_settings.value_settings.value_multiplier
+        FROM goal""")
+    config_results = run_gaql(creds, """
+        SELECT campaign.name, campaign.id, campaign_goal_config.goal, campaign_goal_config.goal_type,
+               campaign_goal_config.campaign_new_customer_acquisition_settings.target_option,
+               campaign_goal_config.campaign_new_customer_acquisition_settings.value_settings_override.value_multiplier,
+               campaign_goal_config.campaign_new_customer_acquisition_settings.value_settings_override.additional_value,
+               campaign_goal_config.campaign_retention_settings.target_option,
+               campaign_goal_config.campaign_loyalty_retention_settings.enable_bid_adjustments_for_loyalty_members
+        FROM campaign_goal_config""")
+    if as_json:
+        return print_json({"goals": goal_results, "campaign_goal_configs": config_results})
+
+    click.secho("Account goals", fg="cyan", bold=True)
+    if not goal_results:
+        click.echo("  (none)")
+    else:
+        rows = []
+        for r in goal_results:
+            g = r.get("goal", {})
+            # A goal carries exactly one settings block, keyed by its goal_type.
+            # Fall through the three v25 blocks so RETENTION and LOYALTY_RETENTION
+            # goals render their values instead of silently showing em-dashes.
+            vs = {}
+            for _block in ("newCustomerAcquisitionGoalSettings",
+                           "retentionGoalSettings",
+                           "loyaltyRetentionGoalSettings"):
+                _candidate = g.get(_block, {}).get("valueSettings", {})
+                if _candidate:
+                    vs = _candidate
+                    break
+            mult = vs.get("valueMultiplier")
+            add_val = vs.get("additionalValue")
+            rows.append({
+                "goal_id": g.get("goalId", ""),
+                "goal_type": g.get("goalType", ""),
+                "eligibility": g.get("optimizationEligibility", ""),
+                "value_multiplier": mult if mult is not None else "—",
+                "additional_value": add_val if add_val is not None else "—",
+            })
+        print_table(rows, ["goal_id", "goal_type", "eligibility", "value_multiplier", "additional_value"])
+
+    click.secho("\nCampaign goal configs", fg="cyan", bold=True)
+    if not config_results:
+        click.echo("  (none)")
+    else:
+        rows = []
+        for r in config_results:
+            c = r.get("campaign", {})
+            cgc = r.get("campaignGoalConfig", {})
+            # Same one-block-per-goal_type shape as `goal` above.
+            settings = {}
+            for _block in ("campaignNewCustomerAcquisitionSettings",
+                           "campaignRetentionSettings",
+                           "campaignLoyaltyRetentionSettings"):
+                _candidate = cgc.get(_block, {})
+                if _candidate:
+                    settings = _candidate
+                    break
+            override = settings.get("valueSettingsOverride", {})
+            mult = override.get("valueMultiplier")
+            add_val = override.get("additionalValue")
+            loyalty_bid_adj = cgc.get(
+                "campaignLoyaltyRetentionSettings", {}
+            ).get("enableBidAdjustmentsForLoyaltyMembers")
+            rows.append({
+                "name": c.get("name", ""),
+                "id": c.get("id", ""),
+                "goal_type": cgc.get("goalType", ""),
+                "target_option": settings.get("targetOption", "—"),
+                "value_multiplier": mult if mult is not None else "—",
+                "additional_value": add_val if add_val is not None else "—",
+                "loyalty_bid_adj": loyalty_bid_adj if loyalty_bid_adj is not None else "—",
+            })
+        print_table(rows, ["name", "id", "goal_type", "target_option", "value_multiplier", "additional_value", "loyalty_bid_adj"])
+
+@campaign.command("migration")
+@click.option("--json", "as_json", is_flag=True)
+def campaign_migration(as_json):
+    """AI Max auto-migration schedule (v25.1) — aca_migration_date_time / broad_match_migration_date_time."""
+    results = run_gaql(get_credentials(), """
+        SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type,
+               campaign.aca_migration_date_time, campaign.broad_match_migration_date_time
+        FROM campaign WHERE campaign.status != 'REMOVED' ORDER BY campaign.name""")
+    if as_json:
+        return print_json(results)
+    rows = []
+    any_scheduled = False
+    for r in results:
+        c = r.get("campaign", {})
+        aca = c.get("acaMigrationDateTime")
+        broad = c.get("broadMatchMigrationDateTime")
+        if aca or broad:
+            any_scheduled = True
+        rows.append({
+            "name": c.get("name", ""),
+            "id": c.get("id", ""),
+            "status": c.get("status", ""),
+            "type": c.get("advertisingChannelType", ""),
+            "aca_migration": aca if aca else "—",
+            "broad_match_migration": broad if broad else "—",
+        })
+    print_table(rows, ["name", "id", "status", "type", "aca_migration", "broad_match_migration"])
+    if not any_scheduled:
+        click.echo("\n  No AI Max auto-migration is currently scheduled for any campaign.")
+
 
 # ── Ad Group commands ────────────────────────────────────────
 
@@ -3540,7 +3659,8 @@ def conversion_perf(days, as_json):
     d_to = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     results = run_gaql(get_credentials(), f"""
         SELECT segments.conversion_action_name, metrics.conversions,
-               metrics.all_conversions, metrics.conversions_value
+               metrics.all_conversions, metrics.conversions_value,
+               metrics.original_conversion_value
         FROM campaign WHERE segments.date BETWEEN '{d_from}' AND '{d_to}'
           AND metrics.conversions > 0
         ORDER BY metrics.conversions DESC""")
@@ -3552,12 +3672,13 @@ def conversion_perf(days, as_json):
         name = r.get("segments",{}).get("conversionActionName","")
         m = r.get("metrics",{})
         if name not in agg:
-            agg[name] = {"name": name, "conv": 0, "all_conv": 0, "value": 0}
+            agg[name] = {"name": name, "conv": 0, "all_conv": 0, "value": 0, "orig_value": 0}
         agg[name]["conv"] += float(m.get("conversions",0))
         agg[name]["all_conv"] += float(m.get("allConversions",0))
         agg[name]["value"] += float(m.get("conversionsValue",0))
+        agg[name]["orig_value"] += float(m.get("originalConversionValue",0))
     rows = sorted(agg.values(), key=lambda x: x["conv"], reverse=True)
-    print_table(rows, ["name", "conv", "all_conv", "value"])
+    print_table(rows, ["name", "conv", "all_conv", "value", "orig_value"])
 
 @conversion_group.command("upload")
 @click.option("--gclid", required=True)
