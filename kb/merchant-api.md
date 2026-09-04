@@ -1440,6 +1440,7 @@ Service account approach is the same.
 | `mc_list_datafeeds` | `GET datasources/v1/accounts/{id}/dataSources` | Correct v1 path |
 | `mc_get_shipping` | `GET accounts/v1/accounts/{id}/shippingSettings` | Correct |
 | `mc_get_return_policy` | `GET accounts/v1/accounts/{id}/onlineReturnPolicies` | Correct |
+| `mc_reports_search` | `POST reports/v1/accounts/{id}/reports:search` | Correct — verified live 2026-09-04 (`gads merchant report`, `gads merchant report-product-performance`) |
 
 ### Gaps — Available But Not Implemented
 
@@ -1452,8 +1453,6 @@ Service account approach is the same.
 | Check file upload status | datasources/v1 | `GET .../dataSources/{id}/fileUploads/latest` |
 | Local inventory | inventories/v1 | `localInventories` insert/list/delete |
 | Regional inventory | inventories/v1 | `regionalInventories` insert/list/delete |
-| Performance reports | reports/v1 | `reports:search` (product_performance_view, etc.) |
-| Product view report | reports/v1 | `reports:search` with `product_view` table |
 | Promotions | promotions/v1 | Full promotions sub-API |
 | Users management | accounts/v1 | `accounts/{id}/users` |
 | Regions management | accounts/v1 | `accounts/{id}/regions` |
@@ -1465,14 +1464,14 @@ Service account approach is the same.
 
 ### Priority Gaps for Talas Use Case
 
-1. **Reports** (`reports/v1`) — `product_view` for disapproved products, `product_performance_view` for clicks/impressions. High value for monitoring.
+1. ~~**Reports** (`reports/v1`)~~ — **implemented 2026-09-04**: `gads merchant report --query "..."` (escape hatch, any table) and `gads merchant report-product-performance` (canned `product_performance_view` query). `product_view` (disapproved products) is reachable via the escape hatch but has no dedicated canned command yet.
 2. **Product writes** (`productInputs`) — needed to fix disapproved products programmatically.
 3. **File upload status** — to monitor feed health after data source fetch.
 
 
 ## Sources
 
-All claims in this document are sourced from the following URLs. Original fetch 2026-06-23; version/interface claims re-verified and extended 2026-07-01 (see "Recent Interface Changes" section near the top for what changed in this pass):
+All claims in this document are sourced from the following URLs. Original fetch 2026-06-23; version/interface claims re-verified and extended 2026-07-01 (see "Recent Interface Changes" section near the top for what changed in this pass); Reports Sub-API implementation (path, request/response schema, and `product_performance_view` column list) verified live 2026-09-04 by fetching `https://merchantapi.googleapis.com/$discovery/rest?version=reports_v1` directly (raw JSON — bypasses the JS-rendered docs site) and cross-checked against a live `reports:search` call against the Talas account (see `gads merchant report -q "SELECT id, title, brand FROM product_view LIMIT 5"`, which returned real rows).
 
 | Source | URL |
 |--------|-----|
@@ -1487,7 +1486,7 @@ All claims in this document are sourced from the following URLs. Original fetch 
 | Discovery doc: products_v1 (methods, product schema) | https://merchantapi.googleapis.com/$discovery/rest?version=products_v1 |
 | Discovery doc: datasources_v1 (methods, DataSource schema) | https://merchantapi.googleapis.com/$discovery/rest?version=datasources_v1 |
 | Discovery doc: inventories_v1 (methods, schemas) | https://merchantapi.googleapis.com/$discovery/rest?version=inventories_v1 |
-| Discovery doc: reports_v1 (search method, report tables) | https://merchantapi.googleapis.com/$discovery/rest?version=reports_v1 |
+| Discovery doc: reports_v1 (search method, report tables) — full schema (SearchRequest/SearchResponse/ReportRow/ProductPerformanceView field lists) re-fetched and parsed 2026-09-04 | https://merchantapi.googleapis.com/$discovery/rest?version=reports_v1 |
 | Versioning guide (confirms no v2 exists; v1alpha 30-day notice policy) | https://developers.google.com/merchant/api/guides/versioning |
 | Latest updates changelog (source of the 2026-07-01 "Recent Interface Changes" additions) | https://developers.google.com/merchant/api/latest-updates |
 | Merchant API v1 GA date correction (Aug 18, 2025, not 2024) | https://support.google.com/merchants/answer/16493611?hl=en |
@@ -1498,7 +1497,7 @@ All claims in this document are sourced from the following URLs. Original fetch 
 - Specific Content API v2.1 migration field-rename details (migration guide URL 404d) — field renames table above is based on discovery doc comparison and overview doc, not a dedicated migration guide.
 - Exact `onlineReturnPolicies` object shape — full schema not fetched (404); shape above derived from accounts_v1 discovery doc summary.
 - Exact `issues` response field names (specifically `impactedDestinations` nesting depth) — primary source is CLI source code docstring + accounts overview; dedicated issues reference page 404d.
-- Reports query field names in `product_view` and `product_performance_view` (e.g. `price_micros`, `item_issues`) — derived from discovery doc table names and overview content; the exact field lists require the full reports discovery doc schema.
+- ~~Reports query field names in `product_view` and `product_performance_view`~~ — **RESOLVED 2026-09-04**: the full `reports_v1` discovery doc schema was fetched directly as raw JSON and parsed. `ProductPerformanceView` fields (camelCase, as returned in the JSON response body): `offerId`, `title`, `brand`, `clicks`, `impressions`, `clickThroughRate`, `conversions`, `conversionRate`, `conversionValue` (a nested `Price` object), `date`/`week` (nested `Date` objects), `customLabel0`-`4`, `productTypeL1`-`L5`, `categoryL1`-`L5`, `customerCountryCode`, `storeType` (enum `ONLINE_STORE`/`LOCAL_STORES`), `marketingMethod` (enum `ORGANIC`/`ADS`). The *query* itself uses snake_case (`offer_id`, `click_through_rate`, etc. — confirmed via the KB's own worked examples below, both of which were written from real request/response pairs). **No cost/spend field exists on this table** — Merchant Center reports carry no ad-spend data (spend lives only in Google Ads' `shopping_performance_view`, see `kb/google-ads.md`). `conversions`/`conversionValue`/`conversionRate` on this table are documented as "Available only for the `FREE` traffic source" — i.e. organic Shopping listings, never paid Shopping ads. `date` is a **required** WHERE-clause condition ("Condition on `date` is required in the `WHERE` clause" per the discovery doc description).
 - Everything in the 2026-07-01 "Recent Interface Changes" table (near top of doc): the live `products_v1/ProductAttributes` schema page and the exact REST path for `getAccountForGcpRegistration` both failed to load as full schemas during this pass (returned nav-only content or 404) — those rows are sourced from Google's own release-notes/search summaries, not a fetched schema, and are flagged `(unverified)` individually.
 
 

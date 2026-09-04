@@ -63,6 +63,7 @@ from .merchant import (
     mc_list_product_statuses,
     mc_list_products,
     mc_register_gcp,
+    mc_reports_search,
 )
 from .ga4 import (
     ga4_get_metadata,

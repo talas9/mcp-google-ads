@@ -2158,6 +2158,77 @@ constraints, **live-verified against the account** 2026-09-04 (not just docs):
   https://developers.google.com/google-ads/api/docs/insights/overview,
   fetched 2026-09-04).
 
+#### Shopping performance report (GAQL)
+
+`gads report shopping` (added 2026-09-04). Read-only GAQL on
+`shopping_performance_view`, per-SKU.
+
+**`shopping_performance_view`** — https://developers.google.com/google-ads/api/fields/v24/shopping_performance_view
+(fetched 2026-09-04 — canonical URL confirmed as the `v24` page, not a
+redirect to `v25`). This resource has **no attributes of its own** beyond
+`.resource_name` — it is a pure segments+metrics view. Confirmed selectable
+product segments: `segments.product_item_id`, `.product_title`,
+`.product_brand`, `.product_type_l1` through `.product_type_l5`,
+`.product_category_level1` through `.product_category_level5`,
+`.product_channel`, `.product_channel_exclusivity`, `.product_condition`,
+`.product_country`, `.product_custom_attribute0`-`4`, `.product_feed_label`,
+`.product_language`, `.product_merchant_id`, `.product_store_id`,
+`.product_aggregator_id`. Confirmed metrics present:
+`metrics.impressions`, `.clicks`, `.cost_micros`, `.conversions`,
+`.conversions_value` (plus the full standard metrics set —
+all_conversions, cost_per_conversion, etc.). `segments.date` is
+filterable/selectable/sortable on this resource, so the standard
+`WHERE segments.date BETWEEN ... AND ...` date-window pattern applies.
+Talas's account has no Shopping campaigns serving as of 2026-09-04 — live
+verification returned 0 rows with exit code 0, a valid (not erroneous) result.
+
+#### Account-level negative criteria (GAQL + mutate)
+
+`gads keyword account-negative list|add` (added 2026-09-04).
+
+**`customer_negative_criterion`** — https://developers.google.com/google-ads/api/fields/v24/customer_negative_criterion
+(fetched 2026-09-04). Resource description: "A negative criterion for
+exclusions at the customer level." Confirmed selectable fields: `.id`,
+`.type`, `.resource_name`, and, as a **oneof** keyed by `.type`:
+`.content_label.type`, `.ip_block.ip_address`,
+`.mobile_app_category.mobile_app_category_constant`,
+`.mobile_application.app_id`/`.name`, `.negative_keyword_list.shared_set`,
+`.placement.url`, `.placement_list.shared_set`, `.youtube_channel.channel_id`,
+`.youtube_video.video_id`. `.type` is an `ATTRIBUTE`-category enum shared
+across the whole API (AD_SCHEDULE, AGE_RANGE, ..., KEYWORD, ...,
+NEGATIVE_KEYWORD_LIST, PLACEMENT, ...) — **only the subset with a matching
+oneof field above is actually usable on this resource.**
+
+**IMPORTANT — there is no `customer_negative_criterion.keyword` field.**
+Despite `KEYWORD` appearing as a general enum value in `.type`, this resource
+has no direct keyword sub-message. Account-level negative *keywords* are
+represented differently: a `customer_negative_criterion` of type
+`NEGATIVE_KEYWORD_LIST` points (`.negative_keyword_list.shared_set`) at a
+`shared_set` resource, and the actual keyword text/match type live as
+`shared_criterion` rows belonging to that shared set. Confirmed via
+https://developers.google.com/google-ads/api/fields/v24/shared_set
+(fetched 2026-09-04): `shared_set.type` enum includes both
+`ACCOUNT_LEVEL_NEGATIVE_KEYWORDS` (the account-wide list — one per account)
+and `NEGATIVE_KEYWORDS` (an ordinary shared negative-keyword list you attach
+to individual campaigns via `campaign_shared_set` — a different feature).
+`shared_criterion` fields confirmed via
+https://developers.google.com/google-ads/api/fields/v24/shared_criterion
+(fetched 2026-09-04): `.keyword.text`, `.keyword.match_type`, `.shared_set`,
+`.negative`, `.type`, `.criterion_id`, `.resource_name`.
+
+`gads keyword account-negative add` implements the full 3-step provisioning
+flow the first time it runs (no existing `ACCOUNT_LEVEL_NEGATIVE_KEYWORDS`
+shared set on the account): a `sharedSetOperation.create` (type
+`ACCOUNT_LEVEL_NEGATIVE_KEYWORDS`), a `customerNegativeCriterionOperation.create`
+(`negativeKeywordList.sharedSet` referencing the just-created set via the
+`-1` temporary-resource-name convention), and a `sharedCriterionOperation.create`
+(the keyword itself), all in one `ads_batch_mutate` call. Subsequent adds
+reuse the existing shared set via a plain `sharedCriteria` single-resource
+`ads_mutate`. Live-verified 2026-09-04 against the Talas account: `list`
+returned one existing criterion (`CONTENT_LABEL` / `PARKED_DOMAIN`), no
+`NEGATIVE_KEYWORD_LIST` yet provisioned — so `add` was verified with mocked
+HTTP only per the task's constraint (no live mutations run).
+
 ---
 
 ### DG-8. Conversion Tracking

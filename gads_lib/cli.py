@@ -75,6 +75,7 @@ from gads_lib import (
     mc_list_product_statuses,
     mc_list_products,
     mc_register_gcp,
+    mc_reports_search,
     now_local,
     print_json,
     print_table,
@@ -1852,6 +1853,38 @@ def _mc_paginate_products(fetch_fn, creds, page_size=1000, max_pages=100):
     return products, truncated
 
 
+def _mc_paginate_reports(creds, query, page_size=1000, max_pages=100):
+    """Page a Merchant reports:search call to exhaustion via nextPageToken.
+
+    Mirrors _mc_paginate_products's shape/cap (100-page safety valve) for the
+    reports sub-API's own pagination cursor. Returns (rows, truncated).
+    """
+    token = None
+    pages = 0
+    rows = []
+    while True:
+        data = mc_reports_search(creds, query, page_size=page_size, page_token=token)
+        rows.extend(data.get("results", []))
+        token = data.get("nextPageToken")
+        pages += 1
+        if not token or pages >= max_pages:
+            break
+    truncated = bool(token) and pages >= max_pages
+    return rows, truncated
+
+
+def _mc_report_row_view(row):
+    """Unwrap a ReportRow's typed union to its single populated view dict.
+
+    Each row from reports:search is shaped {"<viewName>": {...}} where
+    viewName matches the queried table (e.g. "productPerformanceView" for a
+    query against product_performance_view). Returns (view_name, view_dict).
+    """
+    for k, v in row.items():
+        return k, v
+    return "", {}
+
+
 # Severities that mean the product is actually suppressed or demoted right
 # now (mirrors tools/fetch_detail.py's BLOCKING_ISSUE_SEVERITIES). Anything
 # else (e.g. NOT_IMPACTED, SUGGESTION) is a forward-looking advisory.
@@ -2107,6 +2140,89 @@ def merchant_register_gcp(developer_email, account_id, as_json):
     click.secho("\n  Next step: wait ~5 minutes, then retry:", fg="yellow")
     click.echo("    gads merchant account")
     click.echo("    gads merchant status")
+
+
+@merchant.command("report")
+@click.option("--query", "-q", "query", required=True,
+              help="Merchant reports query (its own SQL-like dialect — NOT GAQL). "
+                   "See kb/merchant-api.md for table/column names.")
+@click.option("--json", "as_json", is_flag=True)
+def merchant_report(query, as_json):
+    """Run an arbitrary Merchant reports query (escape hatch).
+
+    IMPORTANT: the Merchant reports query language is its OWN SQL-like dialect
+    (SELECT/FROM/WHERE/ORDER BY/LIMIT over report tables such as
+    product_view, product_performance_view, price_competitiveness_product_view,
+    best_sellers_brand_view, etc.) -- it is NOT GAQL (Google Ads Query Language)
+    and the two are not interchangeable. See kb/merchant-api.md "Reports Sub-API"
+    for the full table/column reference.
+
+    Pages the full result set via nextPageToken (not just one page).
+
+    \\b
+    Example:
+      gads merchant report -q "SELECT offer_id, title, clicks, impressions FROM product_performance_view WHERE date BETWEEN '2026-08-01' AND '2026-08-30' ORDER BY clicks DESC LIMIT 50"
+    """
+    enforce_allowed_caller()
+    rows, truncated = _mc_paginate_reports(get_credentials(), query)
+    if truncated:
+        click.secho("  WARNING: stopped paging at 100 pages -- report may be truncated",
+                     fg="yellow", err=True)
+    if as_json:
+        return print_json({"results": rows, "total": len(rows), "truncated": truncated})
+    if not rows:
+        return click.echo("  (no results)")
+    view_name, first_view = _mc_report_row_view(rows[0])
+    columns = list(first_view.keys())
+    table_rows = [_mc_report_row_view(r)[1] for r in rows]
+    print_table(table_rows, columns)
+    click.echo(f"  {len(rows)} row(s) from {view_name or 'report'}")
+
+
+@merchant.command("report-product-performance")
+@click.option("--days", "-d", type=int, default=30)
+@click.option("--json", "as_json", is_flag=True)
+def merchant_report_product_performance(days, as_json):
+    """Canned per-SKU product-performance report (clicks/impressions/CTR).
+
+    Queries product_performance_view via the Merchant reports sub-API. Default
+    window: 30 days ending yesterday.
+
+    NOTE: product_performance_view has NO cost/spend field -- Merchant Center
+    carries no ad-spend data. Its conversions/conversion_value/conversion_rate
+    columns are populated ONLY for the FREE (organic Shopping listings) traffic
+    source, never for paid Shopping ads -- for paid Shopping ad performance
+    including cost, use `gads report shopping` instead.
+    """
+    enforce_allowed_caller()
+    from datetime import datetime, timedelta
+    d_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    d_to = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    query = (
+        "SELECT offer_id, title, brand, clicks, impressions, click_through_rate "
+        f"FROM product_performance_view WHERE date BETWEEN '{d_from}' AND '{d_to}' "
+        "ORDER BY clicks DESC LIMIT 1000"
+    )
+    rows, truncated = _mc_paginate_reports(get_credentials(), query)
+    if truncated:
+        click.secho("  WARNING: stopped paging at 100 pages -- report may be truncated",
+                     fg="yellow", err=True)
+    if as_json:
+        return print_json({"results": rows, "total": len(rows), "truncated": truncated})
+    if not rows:
+        return click.echo(f"  No product-performance rows in the last {days} days.")
+    table_rows = []
+    for r in rows:
+        _, v = _mc_report_row_view(r)
+        title = v.get("title", "")
+        table_rows.append({"offer_id": v.get("offerId", ""),
+                            "title": (title[:40] + "…") if len(title) > 40 else title,
+                            "brand": v.get("brand", ""),
+                            "clicks": v.get("clicks", ""),
+                            "impr": v.get("impressions", ""),
+                            "ctr": v.get("clickThroughRate", "")})
+    print_table(table_rows, ["offer_id", "title", "brand", "clicks", "impr", "ctr"])
+    click.echo(f"  {len(rows)} product(s)")
 
 
 # ── GA4 commands ─────────────────────────────────────────────
@@ -2792,7 +2908,11 @@ def keyword_remove(adgroup_id, criterion_id, dry_run, yes, as_json):
 @click.option("--yes", "-y", is_flag=True)
 @click.option("--json", "as_json", is_flag=True)
 def keyword_negative(campaign_id, text, match_type, dry_run, yes, as_json):
-    """Add a negative keyword to a campaign."""
+    """Add a CAMPAIGN-LEVEL negative keyword (blocks it in ONE campaign only).
+
+    For an account-wide negative that blocks a search term in EVERY campaign
+    at once, use `gads keyword account-negative add` instead.
+    """
     enforce_allowed_caller()
     op = {"create": {"campaign": f"customers/{CUSTOMER_ID}/campaigns/{campaign_id}",
                      "keyword": {"text": text, "matchType": match_type.upper()}, "negative": True}}
@@ -2803,6 +2923,163 @@ def keyword_negative(campaign_id, text, match_type, dry_run, yes, as_json):
     if as_json:
         return print_json(result)
     click.secho(f"✓ Added negative '{text}' [{match_type}]", fg="green")
+
+
+# ── Account-level negative keywords ──────────────────────────
+# KB: kb/google-ads.md § customer_negative_criterion | verified live 2026-09-04
+# customer_negative_criterion has NO direct `.keyword` field -- account-level
+# negative KEYWORDS are represented as a NEGATIVE_KEYWORD_LIST-type criterion
+# pointing at a shared_set (type ACCOUNT_LEVEL_NEGATIVE_KEYWORDS), whose
+# member keywords live in shared_criterion rows. See docstring below.
+
+@keyword.group("account-negative")
+def keyword_account_negative():
+    """ACCOUNT-LEVEL negative keywords (blocks a term in EVERY campaign at once).
+
+    Unlike `keyword negative` (campaign-level, one campaign per call), these
+    apply across the whole account in a single add -- useful for enforcing the
+    PARTS-ONLY business rule everywhere (e.g. excluding "installation",
+    "repair", "workshop" account-wide instead of repeating the negative per
+    campaign).
+
+    \\b
+    Implementation note (verified against
+    https://developers.google.com/google-ads/api/fields/v24/customer_negative_criterion,
+    fetched 2026-09-04): customer_negative_criterion has no direct
+    `.keyword.text` field. Account-level negative keywords are represented as
+    a criterion of type NEGATIVE_KEYWORD_LIST pointing at a shared_set (of
+    type ACCOUNT_LEVEL_NEGATIVE_KEYWORDS); the actual keyword text/match type
+    live on shared_criterion rows belonging to that shared set. `add`
+    auto-provisions the shared set on first use. customer_negative_criterion
+    also carries non-keyword account-wide exclusions (PLACEMENT,
+    YOUTUBE_CHANNEL, YOUTUBE_VIDEO, MOBILE_APPLICATION, CONTENT_LABEL,
+    IP_BLOCK) -- `list` surfaces the type for all of them.
+    """
+
+
+@keyword_account_negative.command("list")
+@click.option("--json", "as_json", is_flag=True)
+def keyword_account_negative_list(as_json):
+    """List account-level negative criteria of every type.
+
+    NEGATIVE_KEYWORD_LIST rows are expanded to their member keywords (via a
+    follow-up query on shared_criterion); other criterion types (PLACEMENT,
+    YOUTUBE_CHANNEL, YOUTUBE_VIDEO, MOBILE_APPLICATION, CONTENT_LABEL,
+    IP_BLOCK) are shown with their type-specific detail value.
+    """
+    creds = get_credentials()
+    results = run_gaql(creds, """
+        SELECT customer_negative_criterion.id, customer_negative_criterion.type,
+               customer_negative_criterion.negative_keyword_list.shared_set,
+               customer_negative_criterion.placement.url,
+               customer_negative_criterion.youtube_channel.channel_id,
+               customer_negative_criterion.youtube_video.video_id,
+               customer_negative_criterion.mobile_application.app_id,
+               customer_negative_criterion.mobile_application.name,
+               customer_negative_criterion.content_label.type,
+               customer_negative_criterion.ip_block.ip_address
+        FROM customer_negative_criterion""")
+    rows = []
+    for r in results:
+        c = r.get("customerNegativeCriterion", {})
+        ctype = c.get("type", "")
+        if ctype == "NEGATIVE_KEYWORD_LIST":
+            shared_set_rn = (c.get("negativeKeywordList") or {}).get("sharedSet", "")
+            if shared_set_rn:
+                members = run_gaql(creds, f"""
+                    SELECT shared_criterion.keyword.text, shared_criterion.keyword.match_type,
+                           shared_criterion.criterion_id
+                    FROM shared_criterion
+                    WHERE shared_criterion.shared_set = '{shared_set_rn}'""")
+                if members:
+                    for m in members:
+                        kw = m.get("sharedCriterion", {}).get("keyword", {})
+                        rows.append({"id": c.get("id", ""), "type": ctype,
+                                     "detail": f"{kw.get('text','')} [{kw.get('matchType','')}]",
+                                     "shared_set": shared_set_rn})
+                else:
+                    rows.append({"id": c.get("id", ""), "type": ctype,
+                                 "detail": "(empty list)", "shared_set": shared_set_rn})
+            else:
+                rows.append({"id": c.get("id", ""), "type": ctype, "detail": "", "shared_set": ""})
+            continue
+        detail = ""
+        if ctype == "PLACEMENT":
+            detail = c.get("placement", {}).get("url", "")
+        elif ctype == "YOUTUBE_CHANNEL":
+            detail = c.get("youtubeChannel", {}).get("channelId", "")
+        elif ctype == "YOUTUBE_VIDEO":
+            detail = c.get("youtubeVideo", {}).get("videoId", "")
+        elif ctype == "MOBILE_APPLICATION":
+            ma = c.get("mobileApplication", {})
+            detail = ma.get("name", "") or ma.get("appId", "")
+        elif ctype == "CONTENT_LABEL":
+            detail = c.get("contentLabel", {}).get("type", "")
+        elif ctype == "IP_BLOCK":
+            detail = c.get("ipBlock", {}).get("ipAddress", "")
+        rows.append({"id": c.get("id", ""), "type": ctype, "detail": detail, "shared_set": ""})
+    if as_json:
+        return print_json({"criteria": results, "expanded": rows})
+    if not rows:
+        return click.echo("  No account-level negative criteria.")
+    print_table(rows, ["id", "type", "detail", "shared_set"])
+
+
+@keyword_account_negative.command("add")
+@click.argument("text")
+@click.option("--match-type", "-m", type=click.Choice(["EXACT", "PHRASE", "BROAD"], case_sensitive=False), default="PHRASE")
+@click.option("--dry-run", is_flag=True)
+@click.option("--yes", "-y", is_flag=True)
+@click.option("--json", "as_json", is_flag=True)
+def keyword_account_negative_add(text, match_type, dry_run, yes, as_json):
+    """Add an ACCOUNT-WIDE negative keyword (blocks it in EVERY campaign).
+
+    Auto-provisions the account's ACCOUNT_LEVEL_NEGATIVE_KEYWORDS shared set
+    on first use (an account has at most one), then adds the keyword to it.
+    """
+    enforce_allowed_caller()
+    creds = get_credentials()
+    existing = run_gaql(creds, """
+        SELECT customer_negative_criterion.id, customer_negative_criterion.negative_keyword_list.shared_set
+        FROM customer_negative_criterion
+        WHERE customer_negative_criterion.type = 'NEGATIVE_KEYWORD_LIST'""")
+    shared_set_rn = None
+    for r in existing:
+        rn = (r.get("customerNegativeCriterion", {}).get("negativeKeywordList") or {}).get("sharedSet")
+        if rn:
+            shared_set_rn = rn
+            break
+
+    if shared_set_rn:
+        plan = f"add account-level negative keyword '{text}' [{match_type}] to existing list {shared_set_rn}"
+        if not _confirm_and_log(plan, "account-level negative keyword add", dry_run, yes):
+            return
+        op = {"create": {"sharedSet": shared_set_rn,
+                         "keyword": {"text": text, "matchType": match_type.upper()}, "negative": True}}
+        result = ads_mutate(creds, "sharedCriteria", [op])
+        _auto_log("keyword_account_negative_add", f"'{text}' [{match_type}] → {shared_set_rn}")
+    else:
+        plan = (f"provision the account-level negative-keyword list (first use) "
+                f"and add negative keyword '{text}' [{match_type}] to it")
+        if not _confirm_and_log(plan, "account-level negative keyword add (provision list)", dry_run, yes):
+            return
+        ops = [
+            {"sharedSetOperation": {"create": {
+                "type": "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS",
+                "name": "Account-level negative keywords (gads-cli)"}}},
+            {"customerNegativeCriterionOperation": {"create": {
+                "negativeKeywordList": {"sharedSet": f"customers/{CUSTOMER_ID}/sharedSets/-1"}}}},
+            {"sharedCriterionOperation": {"create": {
+                "sharedSet": f"customers/{CUSTOMER_ID}/sharedSets/-1",
+                "keyword": {"text": text, "matchType": match_type.upper()},
+                "negative": True}}},
+        ]
+        result = ads_batch_mutate(creds, ops)
+        _auto_log("keyword_account_negative_add", f"'{text}' [{match_type}] → new account-level list")
+
+    if as_json:
+        return print_json(result)
+    click.secho(f"✓ Added account-level negative keyword '{text}' [{match_type}]", fg="green")
 
 @keyword.command("search-terms")
 @click.option("--days", "-d", type=int, default=7)
@@ -3705,6 +3982,47 @@ def report_search_terms(days, campaign_id, min_clicks, as_json):
     # Delegate to keyword search-terms
     ctx = click.get_current_context()
     ctx.invoke(keyword_search_terms, days=days, campaign_id=campaign_id, min_clicks=min_clicks, as_json=as_json)
+
+@report_group.command("shopping")
+@click.option("--days", "-d", type=int, default=30)
+@click.option("--json", "as_json", is_flag=True)
+def report_shopping(days, as_json):
+    """Per-SKU Shopping performance report.
+
+    GAQL on shopping_performance_view, segmented by product (segments.product_item_id,
+    segments.product_title, segments.product_brand, segments.product_type_l1). Fields
+    verified against
+    https://developers.google.com/google-ads/api/fields/v24/shopping_performance_view
+    (fetched 2026-09-04). Cost is rendered in AED. If the account has no Shopping
+    campaigns serving in the window, zero rows is a valid result, not an error.
+    """
+    from datetime import datetime, timedelta
+    d_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    d_to = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    results = run_gaql(get_credentials(), f"""
+        SELECT segments.product_item_id, segments.product_title, segments.product_brand,
+               segments.product_type_l1, metrics.impressions, metrics.clicks,
+               metrics.conversions, metrics.conversions_value, metrics.cost_micros
+        FROM shopping_performance_view WHERE segments.date BETWEEN '{d_from}' AND '{d_to}'
+        ORDER BY metrics.cost_micros DESC""")
+    if as_json:
+        return print_json(results)
+    rows = []
+    for r in results:
+        seg, m = r.get("segments",{}), r.get("metrics",{})
+        conv = float(m.get("conversions",0))
+        cost = int(m.get("costMicros",0))/1e6
+        title = seg.get("productTitle","")
+        rows.append({"item_id": seg.get("productItemId",""),
+                     "title": (title[:40]+"…") if len(title)>40 else title,
+                     "brand": seg.get("productBrand",""), "type_l1": seg.get("productTypeL1",""),
+                     "impr": m.get("impressions",0), "clicks": m.get("clicks",0),
+                     "conv": conv, "conv_value": round(float(m.get("conversionsValue",0)),2),
+                     "cost": round(cost,2)})
+    print_table(rows, ["item_id", "title", "brand", "type_l1", "impr", "clicks", "conv", "conv_value", "cost"])
+    if not rows:
+        click.echo(f"  No Shopping performance rows in the last {days} days "
+                    f"(no Shopping campaigns serving, or zero impressions in this window).")
 
 
 # ── Performance Max commands (read-only) ──────────────────────

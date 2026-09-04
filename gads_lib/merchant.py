@@ -12,6 +12,7 @@ from .http import get_bearer_headers, request_json
 MA_ACCOUNTS = "https://merchantapi.googleapis.com/accounts/v1"
 MA_PRODUCTS = "https://merchantapi.googleapis.com/products/v1"
 MA_DATASOURCES = "https://merchantapi.googleapis.com/datasources/v1"
+MA_REPORTS = "https://merchantapi.googleapis.com/reports/v1"
 
 
 # KB: kb/merchant-api.md § accounts | https://developers.google.com/merchant/api/reference/rest/accounts_v1beta/accounts/get
@@ -182,6 +183,42 @@ def mc_get_return_policy(creds, as_json=False):
         f"{MA_ACCOUNTS}/accounts/{MERCHANT_CENTER_ID}/onlineReturnPolicies",
         headers=get_bearer_headers(creds),
         params=params,
+        as_json=as_json,
+    )
+
+
+# KB: kb/merchant-api.md § reports | https://developers.google.com/merchant/api/reference/rest/reports_v1/accounts.reports/search
+# Verified 2026-09-04 via the reports_v1 discovery doc
+# (https://merchantapi.googleapis.com/$discovery/rest?version=reports_v1): method id
+# merchantapi.accounts.reports.search, path "reports/v1/{+parent}/reports:search",
+# request schema SearchRequest {query, pageSize, pageToken}, response schema
+# SearchResponse {results[] of ReportRow, nextPageToken}.
+def mc_reports_search(creds, query, page_size=1000, page_token=None, as_json=False):
+    """Execute a Merchant reports query.
+
+    IMPORTANT: the Merchant reports query language is its own SQL-like dialect
+    (SELECT/FROM/WHERE/ORDER BY/LIMIT over tables like product_performance_view) --
+    it is NOT GAQL (Google Ads Query Language) and the two are not interchangeable.
+    See kb/merchant-api.md "Reports Sub-API" for the supported tables and columns.
+
+    POST /reports/v1/accounts/{merchantId}/reports:search
+    Body: {"query": <str>, "pageSize": <int>, "pageToken": <str, optional>}
+
+    Response shape:
+      results[]      -- array of ReportRow objects. Each ReportRow is a typed
+                         union -- only the key matching the queried table is
+                         populated, e.g. a query against product_performance_view
+                         returns rows shaped {"productPerformanceView": {...}}.
+      nextPageToken   -- pagination cursor; absent/empty on the last page.
+    """
+    body = {"query": query, "pageSize": page_size}
+    if page_token:
+        body["pageToken"] = page_token
+    return request_json(
+        "POST",
+        f"{MA_REPORTS}/accounts/{MERCHANT_CENTER_ID}/reports:search",
+        headers=get_bearer_headers(creds),
+        json_body=body,
         as_json=as_json,
     )
 
