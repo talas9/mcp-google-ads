@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, urlparse
 
 import click
 from google.auth.exceptions import RefreshError
@@ -61,3 +62,83 @@ def get_credentials():
         with open(CREDS_PATH, "w") as f:
             f.write(creds.to_json())
     return creds
+
+
+# ── Two-step OAuth (no local callback listener) ─────────────────────────────
+#
+# On WSL/headless environments the local `run_local_server()` callback
+# listener is often unreliable (it can die, or its CSRF state token can
+# mismatch a stale browser tab). The two-step flow avoids it entirely:
+#   1. `build_authorization_url()` prints a consent URL. The user opens it,
+#      grants access, and lands on a `http://localhost:<port>/?...` page
+#      that the browser cannot actually reach (nothing is listening) but
+#      whose address bar still carries the `code`.
+#   2. The user pastes that full URL (or just the `code` value) back in;
+#      `parse_callback_url()` extracts the code and `exchange_authorization_code()`
+#      exchanges it directly via `InstalledAppFlow.fetch_token()`, with no
+#      server involved.
+
+
+def build_authorization_url(client_secret_path, redirect_uri, scopes=None):
+    """Build the Google OAuth consent URL without starting any local server.
+
+    Returns (auth_url, state).
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), scopes or SCOPES)
+    flow.redirect_uri = redirect_uri
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        include_granted_scopes="true",
+    )
+    return auth_url, state
+
+
+def parse_callback_url(url_or_code):
+    """Extract the authorization `code` (and `state`, if present) from either
+    a full OAuth redirect URL pasted from the browser
+    (e.g. 'http://localhost:9090/?state=...&code=4/0A...&scope=...') or a
+    bare authorization code.
+
+    Returns (code, state). Raises ValueError with a clear, user-facing
+    message if no code can be found (including when the callback reports
+    an OAuth error such as `?error=access_denied`).
+    """
+    candidate = (url_or_code or "").strip()
+    if not candidate:
+        raise ValueError("empty callback URL / code")
+
+    if "://" in candidate:
+        parsed = urlparse(candidate)
+        params = parse_qs(parsed.query)
+        code_vals = params.get("code")
+        if not code_vals or not code_vals[0]:
+            error_vals = params.get("error")
+            if error_vals:
+                desc = (params.get("error_description") or [""])[0]
+                detail = f": {desc}" if desc else ""
+                raise ValueError(f"callback reports an OAuth error '{error_vals[0]}'{detail}")
+            raise ValueError("no 'code' parameter found in the callback URL")
+        state = (params.get("state") or [None])[0]
+        return code_vals[0], state
+
+    # Not a URL -- treat the whole string as a bare authorization code.
+    return candidate, None
+
+
+def exchange_authorization_code(client_secret_path, code, redirect_uri, scopes=None):
+    """Exchange an authorization `code` for OAuth credentials, without
+    starting a local callback server.
+
+    Mirrors what `InstalledAppFlow.run_local_server()` produces after a
+    successful browser round-trip, using `flow.fetch_token(code=...)`
+    directly instead.
+    """
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), scopes or SCOPES)
+    flow.redirect_uri = redirect_uri
+    flow.fetch_token(code=code)
+    return flow.credentials

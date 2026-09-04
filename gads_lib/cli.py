@@ -470,13 +470,27 @@ def auth_setup():
 
 
 @auth.command("login")
-@click.option("--port", type=int, default=9090, help="Local OAuth callback port.")
+@click.option("--port", type=int, default=9090,
+              help="Local OAuth callback port. Also used to reconstruct the redirect_uri "
+                   "for --print-url-only / --callback-url / --code — it must match across "
+                   "both steps of the two-step flow.")
 @click.option("--force", is_flag=True, help="Re-authenticate even if token exists.")
 @click.option("--allow-partial", is_flag=True,
               help="Replace the token even if scopes are missing or lost. "
                    "DESTRUCTIVE — only for deliberate downgrades.")
-def auth_login(port, force, allow_partial):
-    """Authenticate with Google (OAuth browser flow)."""
+@click.option("--print-url-only", is_flag=True,
+              help="Print the consent URL and exit — no local server is started and the "
+                   "token is not touched. Use for the two-step flow: open the printed URL, "
+                   "grant access, then paste the resulting callback URL via --callback-url.")
+@click.option("--callback-url", "callback_url", default=None,
+              help="Full redirect URL pasted from the browser after granting consent "
+                   "(e.g. 'http://localhost:9090/?state=...&code=4/0A...&scope=...'). "
+                   "Skips the local callback server entirely — for WSL/headless setups "
+                   "where it is unreliable.")
+@click.option("--code", "auth_code", default=None,
+              help="Bare authorization code, as an alternative to --callback-url.")
+def auth_login(port, force, allow_partial, print_url_only, callback_url, auth_code):
+    """Authenticate with Google (OAuth browser flow, or two-step via --callback-url/--code)."""
     client_secret = CREDS_PATH.parent / "client_secret.json"
 
     if not client_secret.exists():
@@ -489,12 +503,17 @@ def auth_login(port, force, allow_partial):
         click.echo("\n  Or run 'gads auth setup' for the full guided wizard.")
         raise SystemExit(1)
 
+    if print_url_only:
+        _print_oauth_authorization_url(client_secret, port)
+        return
+
     if CREDS_PATH.exists() and not force:
         click.secho("  Token already exists. Use --force to re-authenticate.", fg="yellow")
         click.echo(f"  Token: {CREDS_PATH}")
         return
 
-    _do_oauth_login(client_secret, CREDS_PATH, port=port, allow_partial=allow_partial)
+    _do_oauth_login(client_secret, CREDS_PATH, port=port, allow_partial=allow_partial,
+                     callback_url=callback_url, auth_code=auth_code)
 
 
 @auth.command("revoke")
@@ -647,11 +666,48 @@ def _append_env(env_path, key, value):
         f.writelines(lines)
 
 
-def _do_oauth_login(client_secret_path, token_output_path, port=9090, allow_partial=False):
-    """Run the OAuth browser flow and save the token."""
+def _print_oauth_authorization_url(client_secret_path, port):
+    """Print the OAuth consent URL for the two-step flow, without starting
+    a local server or touching the token."""
+    from .auth import build_authorization_url
+
+    redirect_uri = f"http://localhost:{port}/"
+    auth_url, _state = build_authorization_url(client_secret_path, redirect_uri)
+
+    click.echo()
+    click.echo("=" * 60)
+    click.echo("Open this URL in your browser to authorize:")
+    click.echo()
+    click.echo(auth_url)
+    click.echo()
+    click.echo("=" * 60)
+    click.echo("No local server was started and your token was not touched.")
+    click.echo("After granting access, your browser will try to load a page at")
+    click.echo(f"  http://localhost:{port}/?state=...&code=...&scope=...")
+    click.echo("which will fail to load (nothing is listening) — that's expected.")
+    click.echo("Copy the FULL URL from the address bar and run:")
+    click.echo()
+    click.secho(f"  gads auth login --port {port} --callback-url '<pasted URL>'", fg="cyan")
+    click.echo()
+
+
+def _do_oauth_login(client_secret_path, token_output_path, port=9090, allow_partial=False,
+                     callback_url=None, auth_code=None):
+    """Run the OAuth flow and save the token.
+
+    Either starts the browser + local callback server (default), or — when
+    `callback_url`/`auth_code` is given — exchanges a pasted authorization
+    code directly with no local listener involved. Both paths converge on
+    the same scope-regression guard and atomic token write below.
+    """
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    from .auth import SCOPES, SCOPE_NAMES as scope_names
+    from .auth import (
+        SCOPES,
+        SCOPE_NAMES as scope_names,
+        exchange_authorization_code,
+        parse_callback_url,
+    )
 
     import json as _json
 
@@ -682,17 +738,37 @@ def _do_oauth_login(client_secret_path, token_output_path, port=9090, allow_part
         shutil.copy2(token_output_path, backup_path)
         click.secho(f"  ✓ existing token backed up → {backup_path.name}", fg="cyan")
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), SCOPES)
+    if callback_url or auth_code:
+        try:
+            code, _state = parse_callback_url(callback_url or auth_code)
+        except ValueError as e:
+            click.secho(f"\n  ✗ Could not parse --callback-url/--code: {e}", fg="red", err=True)
+            click.secho("  Your existing token was NOT modified.", fg="green")
+            raise SystemExit(1)
 
-    click.echo(f"  Listening on port {port} for OAuth callback...")
-    try:
-        creds = flow.run_local_server(port=port, prompt="consent", access_type="offline")
-    except Exception as e:
-        click.secho(f"\n  ✗ OAuth flow failed: {e}", fg="red", err=True)
-        click.echo(f"  Make sure no other process is using port {port}.")
-        click.echo("  You can also try: gads auth login --port 8888")
-        click.secho("  Your existing token was NOT modified.", fg="green")
-        raise SystemExit(1)
+        redirect_uri = f"http://localhost:{port}/"
+        click.echo(f"  Exchanging authorization code (redirect_uri={redirect_uri})...")
+        try:
+            creds = exchange_authorization_code(client_secret_path, code, redirect_uri, SCOPES)
+        except Exception as e:
+            click.secho(f"\n  ✗ Code exchange failed: {e}", fg="red", err=True)
+            click.echo("  The code is single-use and short-lived — it may already be spent")
+            click.echo(f"  or expired. Also confirm --port ({port}) matches the port used")
+            click.echo("  to generate the original consent URL.")
+            click.secho("  Your existing token was NOT modified.", fg="green")
+            raise SystemExit(1)
+    else:
+        flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), SCOPES)
+
+        click.echo(f"  Listening on port {port} for OAuth callback...")
+        try:
+            creds = flow.run_local_server(port=port, prompt="consent", access_type="offline")
+        except Exception as e:
+            click.secho(f"\n  ✗ OAuth flow failed: {e}", fg="red", err=True)
+            click.echo(f"  Make sure no other process is using port {port}.")
+            click.echo("  You can also try: gads auth login --port 8888")
+            click.secho("  Your existing token was NOT modified.", fg="green")
+            raise SystemExit(1)
 
     # ── validate BEFORE committing ───────────────────────────────────────────
     granted = set(creds.scopes or [])

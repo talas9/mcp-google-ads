@@ -79,6 +79,21 @@ python generate_token.py
 - **Credentials:** reuses `GOOGLE_ADS_CUSTOMER_ID` / `GOOGLE_ADS_LOGIN_CUSTOMER_ID` (built into the request body's `Destination`, not headers)
 - **Important:** responses are asynchronous — `{"requestId": "..."}` only, no per-event/-member success confirmation. See `kb/data-manager-api.md`.
 
+### Re-authentication (`gads auth login`)
+
+`gads auth login` runs the standard browser + local-callback-server flow by default. On WSL/headless setups the local listener on `--port` (default `9090`) can die or its CSRF `state` token can mismatch a stale browser tab, in which case use the two-step flow instead — it never starts a local server:
+
+```bash
+gads auth login --print-url-only          # prints the consent URL, does not touch the token
+# open the URL, grant access — the browser will try to load
+# http://localhost:9090/?state=...&code=...&scope=... and fail (expected, nothing is listening)
+gads auth login --callback-url '<paste the full URL from the address bar>'
+# or, with just the code value:
+gads auth login --code '<code>'
+```
+
+`--port` must match across both steps (default `9090` for both). Both paths — browser and `--callback-url`/`--code` — go through the same scope-regression guard: a token with missing/lost scopes vs. the existing one is refused unless `--allow-partial` is passed. The same two-step flow is also available directly on `generate_token.py` (`--print-url-only` then `--callback-url`), sharing the same `gads_lib/auth.py` helpers (`exchange_authorization_code`, `parse_callback_url`).
+
 ## Common GAQL Patterns
 
 ```bash

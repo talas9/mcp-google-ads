@@ -388,6 +388,14 @@ gads auth login        # Opens browser for OAuth
 gads doctor            # Verify everything
 ```
 
+> **WSL/headless:** if the local callback listener is unreliable (dies, or its `state` token mismatches a stale tab), skip it entirely with the two-step flow:
+> ```bash
+> gads auth login --print-url-only              # prints the consent URL, doesn't touch the token
+> # open it, grant access, then paste the resulting http://localhost:9090/?...&code=... URL back:
+> gads auth login --callback-url '<pasted URL>'  # or --code '<code>' with just the code
+> ```
+> `--port` (default `9090`) must match across both steps. This goes through the same scope-regression guard as the browser flow — a token missing scopes vs. the existing one is refused unless `--allow-partial` is passed.
+
 > ⚠️ **Customer Match deprecation:** Starting April 1, 2026, `audience upload` will fail if your token has never sent a successful Customer Match request. Upload before that date, or use `gads data-manager audience-upload` (the modern Data Manager API path — see [`kb/data-manager-api.md`](kb/data-manager-api.md)), which is unaffected by this deprecation.
 
 ---
