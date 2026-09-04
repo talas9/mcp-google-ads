@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 
 - `gads_lib/__init__.py::__version__` bumped `3.11.0` → `3.12.0`, with the pinned `tests/test_gads.py::TestVersion` assertion updated to match. `pyproject.toml` takes its version dynamically (`attr = "gads_lib.__version__"`) and needed no separate edit.
 - The `campaign goals` table resolves whichever settings block a goal actually carries (`NEW_CUSTOMER_ACQUISITION`, `RETENTION`, or `LOYALTY_RETENTION`), rather than reading only the new-customer-acquisition block, so non-acquisition goal types render their real values instead of em-dashes.
+- **`kb/google-ads.md` DG-16 updated: `goal`/`campaign_goal_config` confirmed READ-ONLY over REST (v24 and v25)** — a live probe found `goals:mutate` and `campaignGoalConfigs:mutate` both return an HTML 404 (not a JSON `GoogleAdsFailure`), with a `campaigns:mutate validateOnly=true` positive control proving the probe was live-authenticated, not misconfigured. `gads campaign goals` is confirmed to be, and remain, read-only; changing a goal requires the Ads UI. A gRPC-only write path was not tested (this client is REST-only). Also fills in the previously-incomplete `target_option` and `goal_type` enum lists, and records `additional_high_lifetime_value = 10` on the live account goal alongside the already-documented `additional_value = 7`. Docs-only — no code changed, so no version bump.
 
 ## [3.11.0] - 2026-09-04
 

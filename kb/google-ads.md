@@ -3090,7 +3090,31 @@ Verified-selectable field names (live `GoogleAdsFieldService` + live query again
 
 **Live state on the Talas account (verified 2026-09-04):** exactly **one** account goal exists — `goal_id 6547439698`, `goal_type NEW_CUSTOMER_ACQUISITION`, `optimization_eligibility ELIGIBLE`, with `new_customer_acquisition_goal_settings.value_settings.additional_value = 7`. It is attached via `campaign_goal_config` to campaign **23556258912** (`9-Search-HighIntent-Feb2026`) with `campaign_new_customer_acquisition_settings.target_option = TARGET_ALL`. This is materially relevant to how that Search campaign bids: `TARGET_ALL` means the new-customer-acquisition value adjustment (+7 additional value per the account goal) applies to conversions from **all** customers on that campaign, not just new ones — a bidding-strategy factor that was invisible before v25 (the old `campaign_lifecycle_goal` resource this replaces was never queried by any prior version of this CLI).
 
-CLI coverage: `gads campaign goals [--json]` (`gads_lib/cli.py::campaign_goals`, lines ~2748-2814) prints both the account `goal` and the `campaign_goal_config` attachments in one call.
+CLI coverage: `gads campaign goals [--json]` (`gads_lib/cli.py::campaign_goals`, lines ~2748-2836) prints both the account `goal` and the `campaign_goal_config` attachments in one call.
+
+#### `goal` / `campaign_goal_config` are READ-ONLY over REST (verified 2026-09-04)
+
+A live probe established this is a durable API fact, not a client misconfiguration — recorded here so no future session re-attempts it:
+
+- `POST /v25/customers/3552856345/goals:mutate` returns **HTTP 404 with Google's frontend HTML error page** ("That's an error"), **not** a JSON `GoogleAdsFailure`.
+- `POST /v25/customers/3552856345/campaignGoalConfigs:mutate` returns the same HTML 404.
+- The same 404 occurs on **v24** too, so it is not a version-pinning artifact (both v24 and v25 keep the removed-in-v25 `campaign_lifecycle_goal`/`customer_lifecycle_goal` write path gone, and never exposed one for `goal`/`campaign_goal_config` either).
+- **Positive control:** the identical script, credentials, and headers against `campaigns:mutate` with `validateOnly=true` returned HTTP 200 with body `{}`, proving the probe reached and authenticated against the live API — the 404s are a genuine "no such route", not a client-side error.
+- An HTML 404 is distinguishable from a real API rejection: a genuine GoogleAds error returns HTTP 400 JSON with `errorCode`/`GoogleAdsFailure` details, which this is not.
+- `GoogleAdsFieldService` confirms these fields are selectable/filterable/sortable, but that is GAQL search metadata only and says nothing about mutability — it does not imply a `:mutate` endpoint exists.
+- **The batch endpoint is not a way around it** (verified 2026-09-04). `POST /v25/customers/{cid}/googleAds:mutate` rejects the operations at protobuf-JSON parse time, before any business validation:
+  - `goalOperation` → HTTP 400, `Invalid JSON payload received. Unknown name "goalOperation" at 'mutate_operations[0]': Cannot find field.`
+  - `campaignGoalConfigOperation` → HTTP 400, same error naming `campaignGoalConfigOperation`.
+  - Positive control on the same endpoint: a `campaignOperation` no-op update with `validateOnly=true` → HTTP 200 `{}`.
+  This is stronger evidence than the 404s: it proves these resources are absent from the `MutateOperation` schema itself, not merely missing a dedicated route. Both `additional_value` and `additional_high_lifetime_value` update shapes were tried, with identical results.
+
+**Enum values** (from live `GoogleAdsFieldService`, not previously documented in full — only `TARGET_ALL` was recorded above):
+- `campaign_goal_config.campaign_new_customer_acquisition_settings.target_option` → `TARGET_ALL`, `TARGET_SPECIFIC`, `UNKNOWN`, `UNSPECIFIED`
+- `goal.goal_type` → `CUSTOMER_RETENTION`, `LOYALTY_RETENTION`, `NEW_CUSTOMER_ACQUISITION`, `UNKNOWN`, `UNSPECIFIED`
+
+**Live account state addendum (verified 2026-09-04):** the same probe found the account goal (`goal_id 6547439698`, see above) also carries `new_customer_acquisition_goal_settings.value_settings.additional_high_lifetime_value = 10`, alongside the already-documented `additional_value = 7`.
+
+**Conclusion:** `goal` and `campaign_goal_config` are **read-only over the Google Ads REST API** in v24 and v25. `gads campaign goals` is, and will remain, a read command — no write counterpart can exist against this CLI's REST client. Changing a goal requires the Google Ads UI. **Not tested:** whether a gRPC-only write path exists — this probe covered REST only, because this client is REST-only (see "REST API design" in `CLAUDE.md`).
 
 #### v25.1 — AI Max auto-migration tracking
 
@@ -3122,6 +3146,6 @@ Investigated and confirmed out of scope, recorded here so a future refresh doesn
 - **`ad_group_criterion.entity_bid.item_code`** — vertical-ads (e.g. real estate/travel) field. Has an **empty `selectable_with` set** in `GoogleAdsFieldService` — meaning it cannot be selected with any other field or reported at all in its current state, independent of account type.
 - **`recommendation.campaign_specific_app_goal_recommendation`** — app campaigns only. Talas runs no app campaigns.
 
-Sources: live `GoogleAdsFieldService` field-by-field diff (v24 vs v25 schema, 2026-09-04); live GAQL probes of `goal`, `campaign_goal_config`, `campaign.aca_migration_date_time`/`campaign.broad_match_migration_date_time`, `metrics.original_conversion_value`, `segments.loyalty_membership` against the Talas account (2026-09-04); `gads_lib/cli.py` (`campaign_goals`, `campaign_migration`, `conversion_perf`) as the implementation cross-check.
+Sources: live `GoogleAdsFieldService` field-by-field diff (v24 vs v25 schema, 2026-09-04); live GAQL probes of `goal`, `campaign_goal_config`, `campaign.aca_migration_date_time`/`campaign.broad_match_migration_date_time`, `metrics.original_conversion_value`, `segments.loyalty_membership` against the Talas account (2026-09-04); live `goals:mutate`/`campaignGoalConfigs:mutate` REST mutability probe on v24 and v25, with a `campaigns:mutate validateOnly=true` positive control (2026-09-04); `gads_lib/cli.py` (`campaign_goals`, `campaign_migration`, `conversion_perf`) as the implementation cross-check.
 
 ---
