@@ -35,6 +35,7 @@ from gads_lib import (
     ads_mutate,
     ads_batch_mutate,
     ads_upload_click_conversions,
+    parse_partial_failure,
     flatten,
     ga4_get_metadata,
     ga4_run_realtime_report,
@@ -3749,10 +3750,38 @@ def batch_mutate_cmd(operations_json, dry_run, yes, as_json):
         return
     result = ads_batch_mutate(get_credentials(), ops)
     _auto_log("batch_mutate", f"{len(ops)} operations")
+
+    # partialFailure=true means HTTP 200 no longer implies every operation
+    # succeeded -- always inspect the per-operation results before reporting
+    # success (this is the bug being fixed: silently reporting success on a
+    # partially-failed batch).
+    per_op = parse_partial_failure(result, len(ops), results_key="mutateOperationResponses")
+    failed_count = sum(1 for op in per_op if not op["ok"])
+
     if as_json:
-        return print_json(result)
-    click.secho(f"✓ Batch mutate complete", fg="green")
-    print_json(result)
+        print_json({
+            "status": "partial_failure" if failed_count else "success",
+            "total": len(ops),
+            "failed_count": failed_count,
+            "operations": per_op,
+            "result": result,
+        })
+    else:
+        for op in per_op:
+            if op["ok"]:
+                click.secho(f"  ✓ [{op['index']}] ok", fg="green")
+            else:
+                click.secho(f"  ✗ [{op['index']}] {op['error_message']}", fg="red", err=True)
+        if failed_count:
+            click.secho(
+                f"✗ Batch mutate: {failed_count}/{len(ops)} operation(s) failed",
+                fg="red", err=True,
+            )
+        else:
+            click.secho("✓ Batch mutate complete", fg="green")
+
+    if failed_count:
+        raise SystemExit(EXIT_CODES["API"])
 
 
 # ── Standalone commands ──────────────────────────────────────

@@ -209,9 +209,19 @@ def ads_mutate(creds, resource_path, operations):
 # KB: kb/google-ads.md § batch-mutate | https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/customers/mutate
 def ads_batch_mutate(creds, mutate_operations):
     """Cross-resource batch mutate operation.
-    
+
     POST to /googleAds:mutate with {"mutateOperations": mutate_operations}
     KEY: use "mutateOperations" NOT "operations"
+
+    "partialFailure": true is required so that when SOME operations fail,
+    Google still applies the ones that succeeded and returns HTTP 200 with a
+    "partialFailureError" (google.rpc.Status) describing the failures —
+    instead of rejecting the whole batch with a single all-or-nothing HTTP
+    400 (which callers already handle via http.request_json's status-code
+    check). Without this flag the batch is atomic and a single bad operation
+    fails everything; WITH it, a caller must inspect the response body via
+    parse_partial_failure() to know which operations actually succeeded,
+    since HTTP 200 alone no longer means "all operations succeeded".
     Returns response JSON.
     """
     url = (
@@ -219,9 +229,59 @@ def ads_batch_mutate(creds, mutate_operations):
         f"/customers/{CUSTOMER_ID}/googleAds:mutate"
     )
     headers = get_ads_headers(creds)
-    payload = {"mutateOperations": mutate_operations}
-    
+    payload = {"mutateOperations": mutate_operations, "partialFailure": True}
+
     return request_json("POST", url, headers=headers, json_body=payload)
+
+
+def parse_partial_failure(response, total_ops, results_key="mutateOperationResponses"):
+    """Parse a partialFailure-enabled mutate/upload response into a per-operation list.
+
+    Google Ads REST responses that opt into partial failure (via
+    "partialFailure": true in the request) return HTTP 200 even when some
+    operations failed -- the per-operation outcome must be read from the
+    response body's "partialFailureError" (a google.rpc.Status), not from
+    the HTTP status code. Each error's "details" carries a GoogleAdsFailure
+    entry, whose "errors" list has a "location.fieldPathElements" identifying
+    the failing operation via an "index" field (see kb/google-ads.md §
+    batch-mutate and the already-correct handling in
+    ads_upload_click_conversions's caller for the same response shape).
+
+    `results_key` names the response array that is aligned by index with the
+    submitted operations for the SUCCEEDED entries (e.g.
+    "mutateOperationResponses" for customers.googleAds:mutate, "results" for
+    :uploadClickConversions or a single-resource :mutate).
+
+    Returns a list of exactly `total_ops` dicts, one per submitted operation
+    in order:
+      - success: {"index": i, "ok": True, "result": <results[i] or None>}
+      - failure: {"index": i, "ok": False, "error_message": <str>}
+    """
+    errors_by_index = {}
+    partial_error = response.get("partialFailureError")
+    if partial_error:
+        for detail in partial_error.get("details", []):
+            for error in detail.get("errors", []):
+                loc = error.get("location", {})
+                idx = None
+                for elem in loc.get("fieldPathElements", []):
+                    if "index" in elem:
+                        idx = elem["index"]
+                        break
+                if idx is None:
+                    continue  # no operation index to attribute this error to
+                message = error.get("message") or str(error.get("errorCode", {}))
+                errors_by_index[idx] = message
+
+    results = response.get(results_key) or []
+    out = []
+    for i in range(total_ops):
+        if i in errors_by_index:
+            out.append({"index": i, "ok": False, "error_message": errors_by_index[i]})
+        else:
+            result = results[i] if i < len(results) else None
+            out.append({"index": i, "ok": True, "result": result})
+    return out
 
 
 # KB: kb/google-ads.md § conversion-upload | https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/customers/uploadClickConversions

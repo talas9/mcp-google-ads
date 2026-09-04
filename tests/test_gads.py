@@ -36,7 +36,7 @@ class TestGA4RunReportRequestShape:
         fake_resp.text = '{"rows": []}'
         fake_resp.json.return_value = {"rows": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_run_report(
                 fake_creds,
                 dimensions=["date", "country"],
@@ -79,11 +79,11 @@ class TestGA4KeyEventsUsesV1Beta:
         fake_resp.text = '{"keyEvents": []}'
         fake_resp.json.return_value = {"keyEvents": []}
 
-        with patch("requests.get", return_value=fake_resp) as mock_get:
+        with patch("gads_lib.ga4._send_with_retry", return_value=fake_resp) as mock_send:
             result = list_key_events("271773771", fake_creds)
 
-        assert mock_get.called
-        called_url = mock_get.call_args[0][0]  # first positional arg
+        assert mock_send.called
+        called_url = mock_send.call_args[0][1]  # (method, url, ...)
         assert "v1beta" in called_url, f"URL should contain 'v1beta', got: {called_url}"
         assert "analyticsadmin.googleapis.com" in called_url
         assert "v1alpha" not in called_url, "URL should not use v1alpha"
@@ -102,7 +102,7 @@ class TestGSCSearchAnalyticsIncludesStartRow:
         fake_resp.text = '{"rows": []}'
         fake_resp.json.return_value = {"rows": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_search_analytics(
                 fake_creds,
                 site_url="https://shop.talas.ae/",
@@ -136,7 +136,7 @@ class TestMerchantListProductsURL:
         fake_resp.text = '{"products": []}'
         fake_resp.json.return_value = {"products": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_list_products(fake_creds, max_results=10)
 
         assert mock_req.called
@@ -164,7 +164,7 @@ class TestGBPDailyMetricsURL:
         fake_resp.text = '{"timeSeries": {"datedValues": []}}'
         fake_resp.json.return_value = {"timeSeries": {"datedValues": []}}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_daily_metrics(
                 fake_creds,
                 location_name="locations/123456",
@@ -291,7 +291,7 @@ class TestGAQLSelectOnlyGuard:
         fake_resp.text = '[{"results": [{"campaign": {"name": "Test"}}]}]'
         fake_resp.json.return_value = [{"results": [{"campaign": {"name": "Test"}}]}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             result = run_gaql(fake_creds, "SELECT campaign.name FROM campaign LIMIT 1")
 
         assert mock_req.called
@@ -308,7 +308,7 @@ class TestGAQLSelectOnlyGuard:
         fake_resp.status_code = 400
         fake_resp.text = "Bad Request: invalid operation"
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit):
                 ads_mutate(fake_creds, "campaigns", [{"badOp": {}}])
 
@@ -320,7 +320,7 @@ class TestGAQLSelectOnlyGuard:
         fake_resp.status_code = 403
         fake_resp.text = "Forbidden"
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 run_gaql(fake_creds, "SELECT campaign.name FROM campaign")
         assert exc_info.value.code == 5  # EXIT_CODES["API"] after routing through request_json
@@ -342,7 +342,7 @@ class TestRequestJsonErrorBehavior:
         fake_resp.status_code = 400
         fake_resp.text = '{"error": {"code": 400, "message": "Bad Request"}}'
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 request_json("GET", "https://example.com/api")
         assert exc_info.value.code == 5  # EXIT_CODES["API"]
@@ -355,7 +355,7 @@ class TestRequestJsonErrorBehavior:
         fake_resp.status_code = 403
         fake_resp.text = "Forbidden"
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit):
                 request_json("POST", "https://example.com/api", json_body={"q": 1})
 
@@ -368,7 +368,7 @@ class TestRequestJsonErrorBehavior:
         fake_resp.text = '{"result": "ok"}'
         fake_resp.json.return_value = {"result": "ok"}
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = request_json("GET", "https://example.com/api")
 
         assert result == {"result": "ok"}
@@ -381,7 +381,7 @@ class TestRequestJsonErrorBehavior:
         fake_resp.status_code = 200
         fake_resp.text = ""  # empty body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = request_json("DELETE", "https://example.com/api/item/1")
 
         assert result == {}
@@ -395,7 +395,7 @@ class TestRequestJsonErrorBehavior:
         fake_resp.text = "{}"
         fake_resp.json.return_value = {}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             request_json("POST", "https://api.example.com/v1/resource", json_body={"k": "v"})
 
         mock_req.assert_called_once()
@@ -813,7 +813,7 @@ class TestGSCBaseURL:
         fake_resp.text = '{"siteEntry": []}'
         fake_resp.json.return_value = {"siteEntry": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_list_sites(fake_creds)
 
         assert mock_req.called
@@ -829,7 +829,7 @@ class TestGSCBaseURL:
         fake_resp.text = '{"rows": []}'
         fake_resp.json.return_value = {"rows": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_search_analytics(
                 fake_creds,
                 site_url="https://shop.talas.ae/",
@@ -858,7 +858,7 @@ class TestAdsSearchPagination:
             "results": [{"campaign": {"name": "A"}}, {"campaign": {"name": "B"}}]
         }
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             results = ads_search(fake_creds, "SELECT campaign.name FROM campaign")
 
         assert len(results) == 2
@@ -883,7 +883,7 @@ class TestAdsSearchPagination:
             # no nextPageToken → stop
         }
 
-        with patch("requests.request", side_effect=[page1, page2]):
+        with patch("requests.Session.request", side_effect=[page1, page2]):
             results = ads_search(fake_creds, "SELECT campaign.name FROM campaign")
 
         assert len(results) == 2
@@ -1042,7 +1042,7 @@ class TestGracefulErrorHandling:
         })
         monkeypatch.setattr("builtins.input", lambda _: "n")
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 http.request_json(
                     "GET",
@@ -1073,7 +1073,7 @@ class TestJsonModeAccessErrors:
         captured_output = io.StringIO()
         exit_code = None
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 import contextlib
                 with contextlib.redirect_stdout(captured_output):
@@ -1179,7 +1179,7 @@ class TestJsonModeAccessErrors:
         fake_resp.status_code = 401
         fake_resp.text = body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 request_json(
                     "GET",
@@ -1207,7 +1207,7 @@ class TestJsonModeAccessErrors:
         fake_resp.status_code = 403
         fake_resp.text = body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 request_json(
                     "GET",
@@ -1248,7 +1248,7 @@ class TestAdsMutateUrlConstruction:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_mutate(fake_creds, "campaign_criterion", [{"remove": "customers/1/campaignCriteria/1~2"}])
 
         called_url = mock_req.call_args[0][1]
@@ -1270,7 +1270,7 @@ class TestAdsMutateUrlConstruction:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_mutate(fake_creds, "ad_group_criterion", [{"remove": "customers/1/adGroupCriteria/1~2"}])
 
         called_url = mock_req.call_args[0][1]
@@ -1288,7 +1288,7 @@ class TestAdsMutateUrlConstruction:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_mutate(fake_creds, "campaignCriteria", [{"remove": "customers/1/campaignCriteria/1~2"}])
 
         called_url = mock_req.call_args[0][1]
@@ -1305,7 +1305,7 @@ class TestAdsMutateUrlConstruction:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_mutate(fake_creds, "campaigns", [{"create": {"name": "test"}}])
 
         called_url = mock_req.call_args[0][1]
@@ -1354,7 +1354,7 @@ class TestAdsBatchMutate:
         fake_resp.text = json.dumps({"mutateOperationResponses": []})
         fake_resp.json.return_value = {"mutateOperationResponses": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_batch_mutate(fake_creds, [{"campaignOperation": {"create": {}}}])
 
         called_url = mock_req.call_args[0][1]
@@ -1370,7 +1370,7 @@ class TestAdsBatchMutate:
         fake_resp.text = json.dumps({"mutateOperationResponses": []})
         fake_resp.json.return_value = {"mutateOperationResponses": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_batch_mutate(fake_creds, ops)
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1392,7 +1392,7 @@ class TestAdsUploadClickConversions:
 
         conversions = [{"gclid": "abc123", "conversionDateTime": "2026-01-01 10:00:00+00:00"}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_upload_click_conversions(fake_creds, conversions, "customers/1/conversionActions/42")
 
         called_url = mock_req.call_args[0][1]
@@ -1408,7 +1408,7 @@ class TestAdsUploadClickConversions:
 
         conversions = [{"gclid": "abc123", "conversionDateTime": "2026-01-01 10:00:00+00:00"}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_upload_click_conversions(fake_creds, conversions, "customers/1/conversionActions/42")
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1429,7 +1429,7 @@ class TestAdsUploadClickConversions:
         ]
         action_id = "customers/1/conversionActions/99"
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ads_upload_click_conversions(fake_creds, conversions, action_id)
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1457,7 +1457,7 @@ class TestAdsUploadClickConversionsPartialFailure:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = ads_upload_click_conversions(
                 fake_creds,
                 [{"gclid": "x"}],
@@ -1479,7 +1479,7 @@ class TestGenerateKeywordIdeas:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             generate_keyword_ideas(fake_creds, keywords=["tesla parts"])
 
         called_url = mock_req.call_args[0][1]
@@ -1493,7 +1493,7 @@ class TestGenerateKeywordIdeas:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             generate_keyword_ideas(fake_creds, keywords=["tesla parts", "tesla bumper"])
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1510,7 +1510,7 @@ class TestGenerateKeywordIdeas:
         fake_resp.text = json.dumps({"results": []})
         fake_resp.json.return_value = {"results": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             generate_keyword_ideas(fake_creds, url="https://talas.ae")
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1532,7 +1532,7 @@ class TestGenerateKeywordIdeas:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 generate_keyword_ideas(fake_creds, keywords=["tesla parts"], as_json=True)
 
@@ -1554,7 +1554,7 @@ class TestGenerateKeywordForecast:
         fake_resp.text = json.dumps({"campaignForecast": {}})
         fake_resp.json.return_value = {"campaignForecast": {}}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             generate_keyword_forecast(fake_creds, keywords=["tesla parts"])
 
         called_url = mock_req.call_args[0][1]
@@ -1568,7 +1568,7 @@ class TestGenerateKeywordForecast:
         fake_resp.text = json.dumps({"campaignForecast": {}})
         fake_resp.json.return_value = {"campaignForecast": {}}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             generate_keyword_forecast(fake_creds, keywords=["tesla parts", "tesla bumper"])
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1585,7 +1585,7 @@ class TestGenerateKeywordForecast:
         fake_resp.text = json.dumps({"campaignForecast": {}})
         fake_resp.json.return_value = {"campaignForecast": {}}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             generate_keyword_forecast(fake_creds, keywords=["tesla"])
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1625,7 +1625,7 @@ class TestAudienceUploadCsv:
         batch_resp.text = json.dumps({"totalOperationsCount": 1})
         batch_resp.json.return_value = {"totalOperationsCount": 1}
 
-        with patch("requests.request", side_effect=[create_resp, run_resp]) as mock_request, \
+        with patch("requests.Session.request", side_effect=[create_resp, run_resp]) as mock_request, \
              patch("requests.post", return_value=batch_resp) as mock_post:
             returned_job, stats = audience_upload_csv(
                 fake_creds,
@@ -1677,7 +1677,7 @@ class TestAudienceUploadCsv:
         batch_resp.text = json.dumps({})
         batch_resp.json.return_value = {}
 
-        with patch("requests.request", side_effect=[create_resp, run_resp]) as mock_request, \
+        with patch("requests.Session.request", side_effect=[create_resp, run_resp]) as mock_request, \
              patch("requests.post", return_value=batch_resp):
             audience_upload_csv(
                 fake_creds,
@@ -1696,7 +1696,7 @@ class TestAudienceUploadCsv:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestListKeyEvents:
-    """list_key_events — GA4 Admin API, uses raw requests.get."""
+    """list_key_events — GA4 Admin API, routed through gads_lib.http._send_with_retry."""
 
     def test_url_contains_v1beta_and_key_events(self, fake_creds):
         from gads_lib.ga4 import list_key_events
@@ -1707,10 +1707,11 @@ class TestListKeyEvents:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.get", return_value=fake_resp) as mock_get:
+        with patch("gads_lib.ga4._send_with_retry", return_value=fake_resp) as mock_send:
             result = list_key_events("271773771", fake_creds)
 
-        called_url = mock_get.call_args[0][0]
+        method, called_url = mock_send.call_args[0]
+        assert method == "GET"
         assert "v1beta" in called_url
         assert "keyEvents" in called_url
         assert result[0]["eventName"] == "purchase"
@@ -1729,7 +1730,7 @@ class TestListKeyEvents:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.get", return_value=fake_resp):
+        with patch("gads_lib.ga4._send_with_retry", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 list_key_events("271773771", fake_creds, as_json=True)
 
@@ -1756,7 +1757,7 @@ class TestListKeyEvents:
         resp2.text = json.dumps(page2)
         resp2.json.return_value = page2
 
-        with patch("requests.get", side_effect=[resp1, resp2]):
+        with patch("gads_lib.ga4._send_with_retry", side_effect=[resp1, resp2]):
             result = list_key_events("271773771", fake_creds)
 
         assert len(result) == 2
@@ -1765,7 +1766,7 @@ class TestListKeyEvents:
 
 
 class TestCreateKeyEvent:
-    """create_key_event — GA4 Admin API, uses raw requests.post."""
+    """create_key_event — GA4 Admin API, routed through gads_lib.http._send_with_retry."""
 
     def test_body_has_event_name_and_counting_method(self, fake_creds):
         from gads_lib.ga4 import create_key_event
@@ -1780,10 +1781,12 @@ class TestCreateKeyEvent:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.post", return_value=fake_resp) as mock_post:
+        with patch("gads_lib.ga4._send_with_retry", return_value=fake_resp) as mock_send:
             result = create_key_event("271773771", fake_creds, "whatsapp_click")
 
-        sent_body = mock_post.call_args[1]["json"]
+        method, _url = mock_send.call_args[0]
+        assert method == "POST"
+        sent_body = mock_send.call_args[1]["json_body"]
         assert "eventName" in sent_body
         assert "countingMethod" in sent_body
         assert result["_already_exists"] is False
@@ -1808,8 +1811,10 @@ class TestCreateKeyEvent:
         list_resp.text = json.dumps(existing_events)
         list_resp.json.return_value = existing_events
 
-        with patch("requests.post", return_value=conflict_resp), \
-             patch("requests.get", return_value=list_resp):
+        def fake_send(method, url, **kwargs):
+            return conflict_resp if method == "POST" else list_resp
+
+        with patch("gads_lib.ga4._send_with_retry", side_effect=fake_send):
             result = create_key_event("271773771", fake_creds, "whatsapp_click")
 
         assert result["eventName"] == "whatsapp_click"
@@ -1835,7 +1840,7 @@ class TestCreateKeyEvent:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.post", return_value=fake_resp):
+        with patch("gads_lib.ga4._send_with_retry", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 create_key_event("271773771", fake_creds, "purchase", as_json=True)
 
@@ -1869,8 +1874,10 @@ class TestDeleteKeyEvent:
         delete_resp.text = json.dumps({})
         delete_resp.json.return_value = {}
 
-        with patch("requests.get", return_value=list_resp), \
-             patch("requests.delete", return_value=delete_resp):
+        def fake_send(method, url, **kwargs):
+            return list_resp if method == "GET" else delete_resp
+
+        with patch("gads_lib.ga4._send_with_retry", side_effect=fake_send):
             result = delete_key_event("271773771", fake_creds, "purchase")
 
         assert result is True
@@ -1885,12 +1892,12 @@ class TestDeleteKeyEvent:
         list_resp.text = json.dumps(existing_events)
         list_resp.json.return_value = existing_events
 
-        with patch("requests.get", return_value=list_resp), \
-             patch("requests.delete") as mock_delete:
+        with patch("gads_lib.ga4._send_with_retry", return_value=list_resp) as mock_send:
             result = delete_key_event("271773771", fake_creds, "nonexistent_event")
 
         assert result is False
-        mock_delete.assert_not_called()
+        # Only the list GET happened -- no DELETE call was made.
+        assert all(c.args[0] == "GET" for c in mock_send.call_args_list)
 
     def test_delete_url_uses_resource_name(self, fake_creds):
         """Delete call URL contains the resource name returned by list."""
@@ -1910,11 +1917,15 @@ class TestDeleteKeyEvent:
         delete_resp.text = json.dumps({})
         delete_resp.json.return_value = {}
 
-        with patch("requests.get", return_value=list_resp), \
-             patch("requests.delete", return_value=delete_resp) as mock_delete:
+        def fake_send(method, url, **kwargs):
+            return list_resp if method == "GET" else delete_resp
+
+        with patch("gads_lib.ga4._send_with_retry", side_effect=fake_send) as mock_send:
             delete_key_event("271773771", fake_creds, "purchase")
 
-        delete_url = mock_delete.call_args[0][0]
+        delete_calls = [c for c in mock_send.call_args_list if c.args[0] == "DELETE"]
+        assert len(delete_calls) == 1
+        delete_url = delete_calls[0].args[1]
         assert resource_name in delete_url
 
 
@@ -1937,7 +1948,7 @@ class TestGa4BatchRunReports:
             }
         ]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_batch_run_reports(fake_creds, requests_list, property_id="271773771")
 
         sent_body = mock_req.call_args[1]["json"]
@@ -1952,7 +1963,7 @@ class TestGa4BatchRunReports:
         fake_resp.text = json.dumps({"reports": []})
         fake_resp.json.return_value = {"reports": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_batch_run_reports(fake_creds, [], property_id="271773771")
 
         called_url = mock_req.call_args[0][1]
@@ -1972,7 +1983,7 @@ class TestGa4RunPivotReport:
 
         pivots = [{"fieldNames": ["date"], "limit": 10}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_run_pivot_report(
                 fake_creds,
                 dimensions=["date", "country"],
@@ -1994,7 +2005,7 @@ class TestGa4RunPivotReport:
         fake_resp.text = json.dumps({"rows": []})
         fake_resp.json.return_value = {"rows": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_run_pivot_report(
                 fake_creds,
                 dimensions=["date"],
@@ -2019,7 +2030,7 @@ class TestGa4CheckCompatibility:
         fake_resp.text = json.dumps({"dimensionCompatibilities": [], "metricCompatibilities": []})
         fake_resp.json.return_value = {"dimensionCompatibilities": [], "metricCompatibilities": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_check_compatibility(
                 fake_creds,
                 dimensions=["date", "country"],
@@ -2042,7 +2053,7 @@ class TestGa4CheckCompatibility:
         fake_resp.text = json.dumps({})
         fake_resp.json.return_value = {}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             ga4_check_compatibility(
                 fake_creds,
                 dimensions=["date"],
@@ -2112,7 +2123,7 @@ class TestGbpReplyReview:
         fake_resp.json.return_value = {"comment": "Thank you!"}
 
         review_name = "accounts/123/locations/456/reviews/review-789"
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_reply_review(fake_creds, review_name, "Thank you for your review!")
 
         assert mock_req.call_args[0][0] == "PUT"
@@ -2129,7 +2140,7 @@ class TestGbpReplyReview:
         fake_resp.json.return_value = {}
 
         review_name = "accounts/123/locations/456/reviews/rev-001"
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_reply_review(fake_creds, review_name, "Great!")
 
         called_url = mock_req.call_args[0][1]
@@ -2149,7 +2160,7 @@ class TestGbpDeleteReply:
         fake_resp.json.return_value = {}
 
         review_name = "accounts/123/locations/456/reviews/rev-002"
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_delete_reply(fake_creds, review_name)
 
         assert mock_req.call_args[0][0] == "DELETE"
@@ -2178,7 +2189,7 @@ class TestGbpListReviews:
         reviews_resp.text = json.dumps(reviews_body)
         reviews_resp.json.return_value = reviews_body
 
-        with patch("requests.request", side_effect=[accounts_resp, reviews_resp]) as mock_req:
+        with patch("requests.Session.request", side_effect=[accounts_resp, reviews_resp]) as mock_req:
             gbp_mod.gbp_list_reviews(fake_creds, "locations/123")
 
         called_url = mock_req.call_args_list[-1][0][1]
@@ -2196,7 +2207,7 @@ class TestGbpListReviews:
         reviews_resp.text = json.dumps(reviews_body)
         reviews_resp.json.return_value = reviews_body
 
-        with patch("requests.request", return_value=reviews_resp) as mock_req:
+        with patch("requests.Session.request", return_value=reviews_resp) as mock_req:
             gbp_list_reviews(fake_creds, "accounts/1/locations/2")
 
         called_url = mock_req.call_args[0][1]
@@ -2219,7 +2230,7 @@ class TestGbpListReviews:
         page3 = MagicMock(status_code=200, text=json.dumps(body3))
         page3.json.return_value = body3
 
-        with patch("requests.request", side_effect=[page1, page2, page3]):
+        with patch("requests.Session.request", side_effect=[page1, page2, page3]):
             result = gbp_list_reviews(fake_creds, "accounts/1/locations/2")
 
         assert [r["name"] for r in result["reviews"]] == ["r1", "r2", "r3"]
@@ -2241,7 +2252,7 @@ class TestGbpListReviews:
         page2 = MagicMock(status_code=200, text=json.dumps(body2))
         page2.json.return_value = body2
 
-        with patch("requests.request", side_effect=[page1, page2]):
+        with patch("requests.Session.request", side_effect=[page1, page2]):
             result = gbp_list_reviews(fake_creds, "accounts/1/locations/2")
 
         assert result["fetchedReviewCount"] == 2
@@ -2257,7 +2268,7 @@ class TestGbpListReviews:
         page1 = MagicMock(status_code=200, text=json.dumps(body1))
         page1.json.return_value = body1
 
-        with patch("requests.request", return_value=page1) as mock_req:
+        with patch("requests.Session.request", return_value=page1) as mock_req:
             result = gbp_list_reviews(fake_creds, "accounts/1/locations/2", limit=1)
 
         assert result["fetchedReviewCount"] == 1
@@ -2275,7 +2286,7 @@ class TestGbpBatchGetReviews:
         resp = MagicMock(status_code=200, text=json.dumps(body))
         resp.json.return_value = body
 
-        with patch("requests.request", return_value=resp):
+        with patch("requests.Session.request", return_value=resp):
             result = gbp_batch_get_reviews(fake_creds, "accounts/1", ["accounts/1/locations/2"])
 
         payload = result["accounts/1/locations/2"]
@@ -2296,7 +2307,7 @@ class TestGbpMultiDailyMetrics:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_multi_daily_metrics(
                 fake_creds,
                 "locations/12345",
@@ -2319,7 +2330,7 @@ class TestGbpMultiDailyMetrics:
         fake_resp.json.return_value = api_resp
 
         metrics = ["CALL_CLICKS", "WEBSITE_CLICKS"]
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_multi_daily_metrics(
                 fake_creds,
                 "locations/12345",
@@ -2357,7 +2368,7 @@ class TestGbpMultiDailyMetrics:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = gbp_multi_daily_metrics(
                 fake_creds,
                 "locations/12345",
@@ -2385,7 +2396,7 @@ class TestGbpMultiDailyMetrics:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 gbp_multi_daily_metrics(
                     fake_creds,
@@ -2410,7 +2421,7 @@ class TestGbpSearchKeywordsMonthly:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_search_keywords_monthly(
                 fake_creds,
                 "locations/12345",
@@ -2436,7 +2447,7 @@ class TestGbpSearchKeywordsMonthly:
         fake_resp.text = json.dumps(api_resp)
         fake_resp.json.return_value = api_resp
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = gbp_search_keywords_monthly(
                 fake_creds,
                 "locations/12345",
@@ -2459,7 +2470,7 @@ class TestGbpListLocalPosts:
         fake_resp.text = json.dumps({"localPosts": []})
         fake_resp.json.return_value = {"localPosts": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_list_local_posts(fake_creds, "accounts/123", "456")
 
         called_url = mock_req.call_args[0][1]
@@ -2485,7 +2496,7 @@ class TestGbpCreateLocalPost:
             "topicType": "STANDARD",
         }
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_create_local_post(fake_creds, "accounts/123", "456", post_body)
 
         assert mock_req.call_args[0][0] == "POST"
@@ -2506,7 +2517,7 @@ class TestGbpDeleteLocalPost:
         fake_resp.text = json.dumps({})
         fake_resp.json.return_value = {}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gbp_delete_local_post(fake_creds, "accounts/123", "456", "post-789")
 
         assert mock_req.call_args[0][0] == "DELETE"
@@ -2530,7 +2541,7 @@ class TestGscListSites:
         fake_resp.text = json.dumps({"siteEntry": []})
         fake_resp.json.return_value = {"siteEntry": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_list_sites(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2546,7 +2557,7 @@ class TestGscListSites:
         fake_resp.text = json.dumps(expected)
         fake_resp.json.return_value = expected
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = gsc_list_sites(fake_creds)
 
         assert result == expected
@@ -2563,7 +2574,7 @@ class TestGscUrlInspect:
         fake_resp.text = json.dumps({"inspectionResult": {}})
         fake_resp.json.return_value = {"inspectionResult": {}}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_url_inspect(
                 fake_creds,
                 inspection_url="https://talas.ae/products/tesla-bumper",
@@ -2582,7 +2593,7 @@ class TestGscUrlInspect:
         fake_resp.text = json.dumps({"inspectionResult": {}})
         fake_resp.json.return_value = {"inspectionResult": {}}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_url_inspect(
                 fake_creds,
                 inspection_url="https://talas.ae/products/tesla-bumper",
@@ -2604,7 +2615,7 @@ class TestGscUrlInspect:
         fake_resp.text = json.dumps({})
         fake_resp.json.return_value = {}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_url_inspect(
                 fake_creds,
                 inspection_url="https://talas.ae/",
@@ -2627,7 +2638,7 @@ class TestGscListSitemaps:
         fake_resp.text = json.dumps({"sitemap": []})
         fake_resp.json.return_value = {"sitemap": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_list_sitemaps(fake_creds, "https://talas.ae/")
 
         called_url = mock_req.call_args[0][1]
@@ -2643,7 +2654,7 @@ class TestGscListSitemaps:
         fake_resp.text = json.dumps({"sitemap": []})
         fake_resp.json.return_value = {"sitemap": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_list_sitemaps(fake_creds, "https://talas.ae/")
 
         called_url = mock_req.call_args[0][1]
@@ -2658,7 +2669,7 @@ class TestGscListSitemaps:
         fake_resp.text = json.dumps({"sitemap": []})
         fake_resp.json.return_value = {"sitemap": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             gsc_list_sitemaps(
                 fake_creds,
                 "https://talas.ae/",
@@ -2685,7 +2696,7 @@ class TestMcGetAccount:
         fake_resp.text = json.dumps({"accountId": "88887777", "accountName": "Talas"})
         fake_resp.json.return_value = {"accountId": "88887777", "accountName": "Talas"}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_get_account(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2701,7 +2712,7 @@ class TestMcGetAccount:
         fake_resp.text = json.dumps({})
         fake_resp.json.return_value = {}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_get_account(fake_creds)
 
         assert mock_req.call_args[0][0] == "GET"
@@ -2718,7 +2729,7 @@ class TestMcGetAccountStatus:
         fake_resp.text = json.dumps({"accountIssues": []})
         fake_resp.json.return_value = {"accountIssues": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_get_account_status(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2736,7 +2747,7 @@ class TestMcGetShipping:
         fake_resp.text = json.dumps({"services": []})
         fake_resp.json.return_value = {"services": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_get_shipping(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2754,7 +2765,7 @@ class TestMcGetReturnPolicy:
         fake_resp.text = json.dumps({"onlineReturnPolicies": []})
         fake_resp.json.return_value = {"onlineReturnPolicies": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_get_return_policy(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2772,7 +2783,7 @@ class TestMcListDatafeeds:
         fake_resp.text = json.dumps({"dataSources": []})
         fake_resp.json.return_value = {"dataSources": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_list_datafeeds(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2791,7 +2802,7 @@ class TestMcListProductStatuses:
         fake_resp.text = json.dumps({"products": []})
         fake_resp.json.return_value = {"products": []}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             mc_list_product_statuses(fake_creds)
 
         called_url = mock_req.call_args[0][1]
@@ -2813,7 +2824,7 @@ class TestMcListProductStatuses:
         fake_resp.text = json.dumps({"products": products})
         fake_resp.json.return_value = {"products": products}
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             result = mc_list_product_statuses(fake_creds)
 
         assert "products" in result
@@ -2835,7 +2846,7 @@ class TestMcRegisterGcp:
         """mc_register_gcp uses POST, not GET."""
         from gads_lib.merchant import mc_register_gcp
 
-        with patch("requests.request", return_value=self._fake_ok_resp()) as mock_req:
+        with patch("requests.Session.request", return_value=self._fake_ok_resp()) as mock_req:
             mc_register_gcp(fake_creds, developer_email="admin@example.com")
 
         assert mock_req.call_args[0][0] == "POST"
@@ -2844,7 +2855,7 @@ class TestMcRegisterGcp:
         """URL path includes developerRegistration:registerGcp."""
         from gads_lib.merchant import mc_register_gcp
 
-        with patch("requests.request", return_value=self._fake_ok_resp()) as mock_req:
+        with patch("requests.Session.request", return_value=self._fake_ok_resp()) as mock_req:
             mc_register_gcp(fake_creds, developer_email="admin@example.com")
 
         called_url = mock_req.call_args[0][1]
@@ -2855,7 +2866,7 @@ class TestMcRegisterGcp:
         """URL embeds the configured MERCHANT_CENTER_ID (88887777 from conftest env)."""
         from gads_lib.merchant import mc_register_gcp
 
-        with patch("requests.request", return_value=self._fake_ok_resp()) as mock_req:
+        with patch("requests.Session.request", return_value=self._fake_ok_resp()) as mock_req:
             mc_register_gcp(fake_creds, developer_email="admin@example.com")
 
         called_url = mock_req.call_args[0][1]
@@ -2865,7 +2876,7 @@ class TestMcRegisterGcp:
         """When account_id is passed, it overrides the configured ID."""
         from gads_lib.merchant import mc_register_gcp
 
-        with patch("requests.request", return_value=self._fake_ok_resp()) as mock_req:
+        with patch("requests.Session.request", return_value=self._fake_ok_resp()) as mock_req:
             mc_register_gcp(fake_creds, developer_email="admin@example.com",
                             account_id="99999999")
 
@@ -2876,7 +2887,7 @@ class TestMcRegisterGcp:
         """POST body is {"developerEmail": email}."""
         from gads_lib.merchant import mc_register_gcp
 
-        with patch("requests.request", return_value=self._fake_ok_resp()) as mock_req:
+        with patch("requests.Session.request", return_value=self._fake_ok_resp()) as mock_req:
             mc_register_gcp(fake_creds, developer_email="dev@company.com")
 
         _, kwargs = mock_req.call_args
@@ -2898,7 +2909,7 @@ class TestMcRegisterGcp:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 mc_register_gcp(fake_creds, developer_email="admin@example.com", as_json=True)
 
@@ -2961,7 +2972,7 @@ class TestErrorEnvelopes:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 generate_keyword_ideas(fake_creds, keywords=["tesla"], as_json=True)
 
@@ -2985,7 +2996,7 @@ class TestErrorEnvelopes:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.get", return_value=fake_resp):
+        with patch("gads_lib.ga4._send_with_retry", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 list_key_events("271773771", fake_creds, as_json=True)
 
@@ -3010,7 +3021,7 @@ class TestErrorEnvelopes:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.request", return_value=fake_resp):
+        with patch("requests.Session.request", return_value=fake_resp):
             with pytest.raises(SystemExit) as exc_info:
                 gbp_multi_daily_metrics(
                     fake_creds,
@@ -3039,7 +3050,7 @@ class TestErrorEnvelopes:
         fake_resp.status_code = 403
         fake_resp.text = error_body
 
-        with patch("requests.request", return_value=fake_resp), \
+        with patch("requests.Session.request", return_value=fake_resp), \
              patch("gads_lib.http.offer_gcloud_enable"):
             with pytest.raises(SystemExit) as exc_info:
                 mc_get_account(fake_creds)
@@ -3172,7 +3183,7 @@ class TestDatamanagerIngestEvents:
 
         events = [{"eventTimestamp": "2026-01-01T10:00:00+04:00", "adIdentifiers": {"gclid": "abc"}}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             datamanager_ingest_events(fake_creds, events, "999")
 
         called_url = mock_req.call_args[0][1]
@@ -3192,7 +3203,7 @@ class TestDatamanagerIngestEvents:
             {"eventTimestamp": "2026-01-02T10:00:00+04:00", "adIdentifiers": {"gclid": "def"}},
         ]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             datamanager_ingest_events(fake_creds, events, "999")
 
         sent_body = mock_req.call_args[1]["json"]
@@ -3212,7 +3223,7 @@ class TestDatamanagerIngestEvents:
         fake_resp.text = json.dumps({"requestId": "req-1"})
         fake_resp.json.return_value = {"requestId": "req-1"}
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             datamanager_ingest_events(fake_creds, [{"eventTimestamp": "2026-01-01T10:00:00+04:00"}], "999")
 
         sent_headers = mock_req.call_args[1]["headers"]
@@ -3225,7 +3236,7 @@ class TestDatamanagerIngestEvents:
 
         events = [{"eventTimestamp": "2026-01-01T10:00:00+04:00"}] * (MAX_EVENTS_PER_REQUEST + 1)
 
-        with patch("requests.request") as mock_req:
+        with patch("requests.Session.request") as mock_req:
             with pytest.raises(ValueError):
                 datamanager_ingest_events(fake_creds, events, "999")
 
@@ -3245,7 +3256,7 @@ class TestDatamanagerIngestAudienceMembers:
 
         members = [{"userData": {"userIdentifiers": [{"emailAddress": "hash"}]}}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             datamanager_ingest_audience_members(fake_creds, members, "888")
 
         called_url = mock_req.call_args[0][1]
@@ -3262,7 +3273,7 @@ class TestDatamanagerIngestAudienceMembers:
 
         members = [{"userData": {"userIdentifiers": [{"emailAddress": "hash"}]}}]
 
-        with patch("requests.request", return_value=fake_resp) as mock_req:
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req:
             datamanager_ingest_audience_members(fake_creds, members, "888")
 
         sent_body = mock_req.call_args[1]["json"]
@@ -3280,7 +3291,7 @@ class TestDatamanagerIngestAudienceMembers:
             MAX_AUDIENCE_MEMBERS_PER_REQUEST + 1
         )
 
-        with patch("requests.request") as mock_req:
+        with patch("requests.Session.request") as mock_req:
             with pytest.raises(ValueError):
                 datamanager_ingest_audience_members(fake_creds, members, "888")
 
@@ -3337,7 +3348,7 @@ class TestDataManagerConversionIngestCli:
         )
 
         runner = CliRunner()
-        with patch("requests.request") as mock_req:
+        with patch("requests.Session.request") as mock_req:
             result = runner.invoke(
                 cli,
                 ["data-manager", "conversion-ingest", str(events_file), "--action-id", "999", "--dry-run", "--json"],
@@ -3358,7 +3369,7 @@ class TestDataManagerConversionIngestCli:
         events_file.write_text('{"transactionId": "no-timestamp"}\n')
 
         runner = CliRunner()
-        with patch("requests.request") as mock_req:
+        with patch("requests.Session.request") as mock_req:
             result = runner.invoke(
                 cli,
                 ["data-manager", "conversion-ingest", str(events_file), "--action-id", "999", "--dry-run"],
@@ -3473,7 +3484,7 @@ class TestDataManagerAudienceUploadCli:
         )
 
         runner = CliRunner()
-        with patch("requests.request") as mock_req:
+        with patch("requests.Session.request") as mock_req:
             result = runner.invoke(
                 cli,
                 ["data-manager", "audience-upload", str(csv_file),

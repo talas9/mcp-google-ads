@@ -8,10 +8,9 @@ import json
 import sys
 
 import click
-import requests
 
 from .config import GA4_PROPERTY_ID
-from .http import get_bearer_headers, request_json
+from .http import _send_with_retry, get_bearer_headers, request_json
 from .output import EXIT_CODES, classify_api_error
 
 GA4_DATA_BASE = "https://analyticsdata.googleapis.com/v1beta"
@@ -173,7 +172,7 @@ def list_key_events(property_id, creds, as_json=False):
         params = {"pageSize": 200}
         if page_token:
             params["pageToken"] = page_token
-        resp = requests.get(url, headers=get_bearer_headers(creds), params=params, timeout=30)
+        resp = _send_with_retry("GET", url, headers=get_bearer_headers(creds), params=params, timeout=30)
         if resp.status_code >= 400:
             _handle_admin_error(resp, "listing keyEvents", url, as_json=as_json)
         data = resp.json() if resp.text else {}
@@ -199,7 +198,7 @@ def create_key_event(property_id, creds, event_name, counting_method="ONCE_PER_S
     pid = _normalise_property(property_id)
     url = f"{GA4_ADMIN_BASE}/properties/{pid}/keyEvents"
     body = {"eventName": event_name, "countingMethod": counting_method}
-    resp = requests.post(url, headers=get_bearer_headers(creds), json=body, timeout=30)
+    resp = _send_with_retry("POST", url, headers=get_bearer_headers(creds), json_body=body, timeout=30)
     if resp.status_code == 409:
         # Already exists — look it up from the list so we still return a dict.
         for existing in list_key_events(pid, creds, as_json=False):
@@ -232,7 +231,7 @@ def delete_key_event(property_id, creds, event_name, as_json=False):
             f"keyEvent {event_name!r} found but has no resource name — cannot delete."
         )
     url = f"{GA4_ADMIN_BASE}/{resource_name}"
-    resp = requests.delete(url, headers=get_bearer_headers(creds), timeout=30)
+    resp = _send_with_retry("DELETE", url, headers=get_bearer_headers(creds), timeout=30)
     if resp.status_code in (200, 204):
         return True
     _handle_admin_error(resp, f"deleting keyEvent {event_name!r}", url, as_json=as_json)

@@ -25,17 +25,17 @@ classifiers = [
     "Topic :: Office/Business",
 ]
 dependencies = [
-    "click>=8.1",
-    "requests>=2.33.0",
-    "google-auth>=2.35",
-    "google-auth-oauthlib>=1.2",
-    "python-dotenv>=1.2.2",
+    "click>=8.5.0",
+    "requests>=2.34.2",
+    "google-auth>=2.57.1",
+    "google-auth-oauthlib>=1.4.1",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.0",
-    "pytest-cov>=6.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
 ]
 
 [project.scripts]
