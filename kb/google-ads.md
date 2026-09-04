@@ -3,7 +3,8 @@
 > Implementation-grade reference for building new gads-cli subcommands.
 > Every concrete request/response example is derived from the live `gads_lib/ads.py`
 > implementation + official doc pages fetched 2026-06-23, re-verified against
-> official + primary-source-cited reporting on 2026-07-01.
+> official + primary-source-cited reporting on 2026-07-01, and re-verified against
+> official developers.google.com pages fetched **2026-09-04**.
 
 ---
 
@@ -11,7 +12,10 @@
 
 | Version | Release Date | Status |
 |---------|-------------|--------|
-| v25     | Not yet released — projected ~2026-07 per third-party reporting citing Google's 2026 cadence | Not GA as of 2026-07-01 (unverified exact date; see note below) |
+| v26     | Tentative ~2026-10 (listed as upcoming on the release-notes page) | Not GA as of 2026-09-04 |
+| v25.2   | Tentative ~2026-09 (listed as upcoming on the release-notes page) | Not GA as of 2026-09-04 |
+| v25.1   | 2026-08-19 | **GA — current latest** |
+| v25     | 2026-07-22 | GA |
 | v24.2   | 2026-06-24 | GA |
 | v24.1   | 2026-05-13 | GA |
 | v24     | 2026-04-22 | GA |
@@ -25,11 +29,23 @@
 | v21.1   | 2026-02-25 | GA |
 | v21     | 2025-08-06 | GA — **sunsets 2026-08-05** [verified: ads-developers.googleblog.com/2026/06/google-ads-api-v21-sunset-reminder.html, fetched 2026-07-01] |
 
-**v25 status check (2026-07-01):** As of this fetch, neither the official release-notes page nor the Google Ads Developer Blog's 2026 archive (newest post 2026-06-29) lists a v25 announcement. **v24.2 (2026-06-24) is the current latest confirmed-released version.** Third-party reporting (ppc.land, seroundtable, digitalphablet — all citing Google's Sept-2025 "monthly release cadence" announcement) projects v25 for July 2026 with v25.1/v25.2 following in Aug/Sept 2026, but this is **not yet confirmed by an official Google source** as of today. Re-check `https://developers.google.com/google-ads/api/docs/release-notes` before bumping past v24.2. (unverified — projection, not an official release)
+**Version status (re-verified 2026-09-04):** v25 went GA **2026-07-22** and v25.1 went GA **2026-08-19** — both confirmed from the static HTML of the official release-notes page (anchors `v25-2026-07-22` and `v25-1-2026-08-19`). **v25.1 is the current latest GA version.** v25.2 (~Sept 2026) and v26 (~Oct 2026) appear on that page as upcoming and are **not** GA today. The July-2026 projection recorded in the previous revision of this file has therefore been superseded by the official release notes; the third-party "monthly cadence" reporting cited below turned out to be directionally right but is no longer the basis for these dates.
+
+**gads-cli is 1 major version behind.** The CLI pins `v24` while upstream GA is `v25.1`. This is a deliberate pin, not a defect — `v24` does not sunset until **May 2027** (see below), so there is no forced-migration deadline. Bumping is a code change (`GOOGLE_ADS_API_VERSION` / `config.py`), not a KB change, and must be done against the v25 migration notes because major bumps can be breaking.
 
 **Current gads-cli default:** `v24` (env var `GOOGLE_ADS_API_VERSION`, falls back to `"v24"` in `config.py` line 64 — confirmed via direct file read 2026-07-01). Minor versions (`v24.1`, `v24.2`) are non-breaking and apply to the same `v24` REST URL segment — no code or env var change needed to pick up their new fields (see DG-13). gads-cli does **not** need to bump to `v24.2` explicitly; it already gets v24.2 fields for free since the URL path stays `/v24/`.
 
-**Sunset schedule:** Google's documented policy (confirmed via raw-HTML fetch of the sunset-dates page, 2026-07-01): **"Google will sunset a version 1 year after its release."** [verified: developers.google.com/google-ads/api/docs/sunset-dates]. The page's actual per-version sunset-date table is rendered client-side and was not extractable via fetch/curl on either the 2026-06-23 or 2026-07-01 attempts — only the policy sentence and the release-date table were recoverable from static HTML. Only **v21's exact sunset date (2026-08-05)** is independently confirmed, via the dedicated blog reminder post. Applying the "1 year after release" rule to the other release dates above gives *inferred* (not officially re-confirmed per-version) sunset estimates: v22 ≈ 2026-10-15, v23 ≈ 2027-01-28, v24 ≈ 2027-04-22. Treat these three as [inference] until the sunset-dates table is directly readable.
+**Sunset schedule (re-verified 2026-09-04 — the per-version table IS present in static HTML today and was read directly, superseding the previous "client-rendered / not extractable" note):** Google's documented policy remains **"Google will sunset a version 1 year after its release"**, but the published per-version dates are rounded to a month rather than falling on the exact release anniversary. Official table as read on 2026-09-04 [verified: developers.google.com/google-ads/api/docs/sunset-dates]:
+
+| Version | Sunset |
+|---------|--------|
+| v21     | 2026-08-05 (already sunset) |
+| v22     | October 2026 (tentative) |
+| v23     | February 2027 |
+| v24     | **May 2027** ← the version gads-cli pins |
+| v25     | August 2027 |
+
+The v23/v24 estimates carried in the previous revision (2027-01-28 / 2027-04-22), derived by applying the 1-year rule to release dates, were each about a month early and have been replaced with the official values.
 
 **Sources:**
 - Release notes: https://developers.google.com/google-ads/api/docs/release-notes (fetched 2026-06-23, re-fetched 2026-07-01)
@@ -1117,15 +1133,31 @@ WHERE conversion_action.status = 'ENABLED'
 
 ### Rate Limits & Quotas
 
-Specific numeric limits (operations/day, RPS) are not extractable from the docs (the quotas page returned HTTP 404). Confirmed behavior:
+Concrete numbers **are** published — at `docs/best-practices/quotas`, not the `docs/concepts/quotas` path this file previously cited as a 404 (that path is still 404 today). Verified 2026-09-04:
+
+| Limit | Value |
+|-------|-------|
+| Explorer access — daily operations (production account) | 2,880 / day |
+| Explorer access — daily operations (test account) | 15,000 / day |
+| Basic access — daily operations | 15,000 / day |
+| Operations per mutate request | 10,000 max |
+| Action operations per mutate request | 100 max |
+| KeywordPlanIdeaService / Planning services | 1 QPS |
+| Conversions per conversion-upload request | 2,000 max |
+| Billing / AccountBudget operations per mutate request | 1 |
+| gRPC response size cap | 64 MB |
+
+Confirmed behavior (unchanged):
 
 - Quotas are **per developer token**, not per customer account.
 - Access level determines ceiling: Standard > Basic > Explorer > Test.
-- Rate-limited responses: **HTTP 429**. gads-cli backoff: `delay = 10 * (attempt + 1)` sec, up to 5 retries.
+- Rate-limited responses: **HTTP 429**. gads-cli retries 429 unconditionally with exponential backoff (`GADS_HTTP_RETRIES`, default 4) — see the CLI's retry semantics in README.
 - Batch efficiently: prefer ~500 operations per mutate request rather than individual calls.
 - `addOperations` is most likely to hit 429 for large CSV uploads — retry with backoff.
 
-Source: https://developers.google.com/google-ads/api/docs/best-practices/overview (fetched 2026-06-23)
+Sources:
+- https://developers.google.com/google-ads/api/docs/best-practices/quotas (fetched 2026-09-04, HTTP 200 — the authoritative numeric table)
+- https://developers.google.com/google-ads/api/docs/best-practices/overview (fetched 2026-06-23)
 
 
 ---
@@ -1225,7 +1257,7 @@ if resp.status_code != 200:
 
 5. **Customer Match consent fields required** — `consent.adUserData` and `consent.adPersonalization` must be `"GRANTED"`. Missing these causes upload failure. Required post-2024.
 
-6. **OfflineUserDataJobService April 2026 note** — starting April 1, 2026, uploads may fail if the token has no prior successful Customer Match history. Pre-upload or migrate to Data Manager API.
+6. **OfflineUserDataJobService Customer Match restriction — IN FORCE SINCE 2026-04-01, NOT a future note.** Developer tokens with no successful Customer Match request in the qualifying window (2025-10-01 to 2026-03-31) are restricted, and `OfflineUserDataJobService` uploads from them fail. Wording re-confirmed verbatim on the official page 2026-09-04 (page last updated 2026-08-19). **[UNVERIFIED for this account: no Customer Match call has been made from the Talas developer token in any audit, so whether that token retains access is unknown. Treat `gads audience upload` as at-risk until a live call proves otherwise.]** Fallback path: the Data Manager API (`gads data-manager audience-upload`).
 
 7. **Keyword special characters** — `generateKeywordIdeas` and `generateKeywordForecastMetrics` reject `! @ % , * '`. Sanitize: `re.sub(r'[!@%,*\']', '', keyword)`.
 

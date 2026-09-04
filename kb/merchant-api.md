@@ -12,8 +12,9 @@ The Merchant API is a redesign of the legacy Content API for Shopping.
 
 - **Merchant API v1 reached General Availability: August 18, 2025** (corrected — a prior version of this doc said "2024", which was wrong).
   (Sources: https://support.google.com/merchants/answer/16493611?hl=en — "Merchant API is now generally available", dated August 2025; corroborated by contemporaneous press coverage of the Aug 18, 2025 GA announcement, e.g. https://www.searchenginejournal.com/google-makes-merchant-api-generally-available-whats-new/554011/)
-- **Content API for Shopping (v2.1) sunset date: August 18, 2026**
-  (Source: https://developers.google.com/shopping-content/guides/quickstart — "Content API for Shopping will be sunset on August 18, 2026" — re-verified 2026-07-01, unchanged)
+- **Content API for Shopping (v2.1) is ALREADY SUNSET — it happened on August 18, 2026, which is now in the past.**
+  Re-verified 2026-09-04: the official quickstart page now reads "Content API for Shopping was sunset on August 18, 2026" (past tense) and adds that **"Starting September 1, 2026, requests will experience progressive errors."** Both dates are behind us, so any remaining v2.1 integration is already degrading, not merely deprecated. There is no migration deadline left to plan around — migration is overdue. gads-cli is unaffected: it calls Merchant API v1 only, never `shoppingcontent.googleapis.com`.
+  (Source: https://developers.google.com/shopping-content/guides/quickstart — fetched 2026-09-04)
 - **v1beta discontinued: February 28, 2026**
   (Source: https://developers.google.com/merchant/api/overview — "Merchant API v1beta was discontinued and shut down on February 28, 2026" — re-verified 2026-07-01, unchanged)
 - **No v2 of any sub-API has shipped.** Per the versioning guide, a major bump (v1→v2) would only signal a backward-incompatible break; as of 2026-07-01 every stable sub-API is still at v1.
@@ -870,7 +871,7 @@ Authorization: Bearer ya29.a0AfB_byC...
 
 ### POST /reports/v1/accounts/{merchantId}/reports:search
 
-**Purpose:** Execute a SQL-like query against Merchant Center data. This is the Merchant API equivalent of a GAQL query — one endpoint, many report types.
+**Purpose:** Execute a query against Merchant Center data. This is the Merchant API equivalent of a GAQL query — one endpoint, many report types — but it is **a different language**: officially the **Merchant Center Query Language (MCQL)**, described by Google as "similar to SQL". Do **not** assume GAQL syntax, functions, or field names carry over. (Source: https://developers.google.com/merchant/api/guides/reports/query-language — verified 2026-09-04.)
 
 **Parameters:**
 
@@ -1357,7 +1358,8 @@ Trigger: calling `productInputs:insert` without `?dataSource=` query param.
 | Event | Date |
 |-------|------|
 | Merchant API v1beta discontinued | February 28, 2026 |
-| Content API v2.1 sunset | **August 18, 2026** |
+| Content API v2.1 sunset | **August 18, 2026 — already past** |
+| Content API v2.1 progressive errors begin | **September 1, 2026 — already past** |
 
 Source: https://developers.google.com/shopping-content/guides/quickstart, https://developers.google.com/merchant/api/overview
 

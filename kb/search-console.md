@@ -6,11 +6,20 @@ The Search Console API has two co-existing API surface names that point to the s
 
 | Surface | Discovery name | Base URL | Status |
 |---|---|---|---|
-| **Current** | `searchconsole` v1 | `https://www.googleapis.com/webmasters/v3` (Search Analytics / Sites / Sitemaps) | Active, maintained |
+| **Canonical (per discovery doc, 2026-09-04)** | `searchconsole` v1 | `https://searchconsole.googleapis.com/webmasters/v3` (Search Analytics / Sites / Sitemaps) | Active — this is now the documented host |
+| **Legacy host, still working** | `searchconsole` v1 | `https://www.googleapis.com/webmasters/v3` (Search Analytics / Sites / Sitemaps) | Active, no deprecation notice found |
 | **Current** | `searchconsole` v1 | `https://searchconsole.googleapis.com/v1` (URL Inspection only) | Active |
 | **Legacy name** | `webmasters` v3 | same endpoints | Still functional; discovery document support ended 2020-12-31 |
 
-**Key finding:** The name change from `webmasters` v3 → `searchconsole` v1 was cosmetic/discovery-level only. The underlying REST endpoints at `www.googleapis.com/webmasters/v3` did **not** change and remain active as of 2026-07-01 (re-verified against the live discovery document, see below). The gads CLI's use of `GSC_BASE = "https://www.googleapis.com/webmasters/v3"` is functionally correct; the only practical difference is that Python client library callers should now use `build('searchconsole', 'v1')` instead of `build('webmasters', 'v3')`.
+**Key finding, updated 2026-09-04 — the host moved in the discovery doc.** The `webmasters` v3 → `searchconsole` v1 rename was originally discovery-level only, and the *paths* are still `webmasters/v3/...`. But the live discovery document (revision `20260902`, fetched 2026-09-04 — the previous revision recorded here was `20260630`) now sets `rootUrl`/`baseUrl` to `https://searchconsole.googleapis.com/` for **every** resource, including `searchanalytics`, `sites` and `sitemaps` — not just URL Inspection. The canonical Search Analytics endpoint is therefore now:
+
+```
+POST https://searchconsole.googleapis.com/webmasters/v3/sites/{siteUrl}/searchAnalytics/query
+```
+
+**gads-cli is not broken.** Its `GSC_BASE = "https://www.googleapis.com/webmasters/v3"` still works: both hosts were probed unauthenticated on 2026-09-04 and both returned HTTP 401 "Login Required" (not 404), i.e. both route to a live service. The constant simply no longer matches the canonical discovery doc. **No deprecation notice for the `www.googleapis.com` host was found on any official page fetched today — whether or when it is retired is [unverified].** Examples further down this file still show the legacy host; they are functionally correct, and the canonical form is the one above.
+
+Python client library callers should use `build('searchconsole', 'v1')` rather than `build('webmasters', 'v3')`.
 
 The **URL Inspection API** (added January 2022) uses a different base host: `https://searchconsole.googleapis.com/v1`.
 
@@ -30,7 +39,8 @@ Sources:
 
 | API group | Base URL |
 |---|---|
-| Search Analytics, Sites, Sitemaps | `https://www.googleapis.com/webmasters/v3` |
+| Search Analytics, Sites, Sitemaps (canonical, per discovery doc 2026-09-04) | `https://searchconsole.googleapis.com/webmasters/v3` |
+| Search Analytics, Sites, Sitemaps (legacy host, still live — what gads-cli sends) | `https://www.googleapis.com/webmasters/v3` |
 | URL Inspection | `https://searchconsole.googleapis.com/v1` |
 
 Source: https://developers.google.com/webmaster-tools/v1/api_reference_index

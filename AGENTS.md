@@ -96,8 +96,8 @@ campaignAssets for Search extensions, not Performance Max resources.
 ## Merchant Reports Sub-API
 
 `tools/gads merchant report` and `tools/gads merchant report-product-performance` use the Merchant
-reports sub-API, which has its **own SQL-like query dialect** — it is NOT GAQL and the two are not
-interchangeable. See `kb/merchant-api.md` for the table/column reference.
+reports sub-API, which has its **own query language — MCQL, the Merchant Center Query Language**.
+It is NOT GAQL and the two are not interchangeable. See `kb/merchant-api.md` for the table/column reference.
 
 ```bash
 tools/gads merchant report -q "SELECT offer_id, title, clicks FROM product_performance_view WHERE date BETWEEN '2026-08-01' AND '2026-08-30' ORDER BY clicks DESC LIMIT 50"
@@ -107,6 +107,56 @@ tools/gads merchant report-product-performance --days 30 --json
 `product_performance_view` has no cost field, and its conversion columns cover FREE (organic
 Shopping listing) traffic only, never paid Shopping ads — use `tools/gads report shopping` for
 paid Shopping performance including cost.
+
+## HTTP Reliability
+
+Every request goes through one shared retry layer. Two env vars control it:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `GADS_HTTP_RETRIES` | `4` | Max **attempts** (not extra attempts) for a retryable request |
+| `GADS_HTTP_TIMEOUT` | `30` | Per-request timeout in seconds |
+
+- **429 is always retried**, mutations included — a throttled request was never processed, so a
+  retry cannot double-apply it. `Retry-After` is honoured in both seconds and HTTP-date forms.
+- **5xx, connection errors and timeouts are retried only for idempotent calls**, because the write
+  may already have landed server-side.
+- **Idempotency is fail-closed:** any POST is treated as a mutation and NOT retried unless its URL
+  is on the read allowlist (`:search`, `:searchStream`, `:runReport`, `:runRealtimeReport`,
+  `:batchRunReports`, `:runPivotReport`, `:checkCompatibility`, `:inspect`, `:generateKeywordIdeas`,
+  `:generateKeywordForecastMetrics`, `/searchAnalytics/query`). GBP v4, Merchant
+  `developerRegistration` and GA4 Admin `keyEvents` POST to URLs with no mutate marker, so a
+  denylist would have silently retried them.
+
+If a command fails after retries, do not loop on it — surface the error. Backoff is exponential
+with jitter and each sleep is capped at 60s, so a retried failure has already waited.
+
+## Auth — two-step flow for headless/WSL
+
+The local callback listener is unreliable under WSL. Complete OAuth in two steps instead:
+
+```bash
+tools/gads auth login --print-url-only              # prints consent URL, does not touch the token
+# open it, grant access, then paste the whole redirected localhost URL back:
+tools/gads auth login --callback-url '<pasted URL>'
+tools/gads auth login --code '<code>'               # equivalent, if you only have the code
+```
+
+`--port` (default `9090`) must match across both steps. The two-step path runs the same
+scope-regression guard as the browser flow: a token with fewer scopes than the existing one is
+refused unless `--allow-partial` is passed. Only the human can click "Allow" — everything else,
+including generating the URL and exchanging the code, is a CLI call.
+
+## Merchant Pagination
+
+`merchant products` and `merchant product-status` return the **whole catalogue**, not one page.
+Both hit the same `products` resource (Merchant API v1 has no standalone `productstatuses`
+endpoint), request `pageSize=1000` (the documented max), and follow `nextPageToken` to exhaustion
+behind a 100-page safety cap. `merchant report` / `report-product-performance` page the reports
+sub-API identically. On hitting the cap with a token outstanding, stderr carries a truncation
+warning and `--json` sets `"truncated": true` — check that field before treating a result as
+complete. `--limit` trims only the printed table; `--json` is always the full set, and
+`product-status --json` also carries a `summary` object.
 
 ## Invocation
 
@@ -171,6 +221,12 @@ The audit produces `overall_score` (0-100), `grade` (A-F), and per-section score
 3. Run `gads kb check` to verify no drift remains. This command exits non-zero on drift and is CI-able.
 
 **The KB drift check** (`gads kb check`) compares version strings embedded in the service modules (`ads.py`, `ga4.py`, `gbp.py`, `gsc.py`) against `kb/manifest.json`. A mismatch means the KB docs are stale relative to the code.
+
+**It does not tell you whether the code is behind upstream Google.** As of 2026-09-04 the CLI pins
+Google Ads `v24` while upstream GA is `v25.1` (released 2026-08-19) — `kb check` reports zero drift
+because the KB and the code agree. `v24` sunsets **May 2027**, so this is a deliberate pin with
+runway, not a defect. The manifest records upstream reality in `latest_upstream_version`; check that
+field, not just the drift check, before assuming the CLI is current.
 
 **Example workflow when bumping Google Ads API:**
 ```bash

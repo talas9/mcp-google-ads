@@ -8,8 +8,12 @@
       "https://www.googleapis.com/auth/adwords"
     ],
     "status": "active",
-    "sunset_date_or_null": null,
-    "kb_file": "google-ads.md"
+    "sunset_date_or_null": "2027-05",
+    "kb_file": "google-ads.md",
+    "last_verified": "2026-09-04",
+    "latest_upstream_version": "v25.1",
+    "latest_upstream_release_date": "2026-08-19",
+    "pinned_version_note": "current_version tracks the version gads-cli pins and this KB documents (v24 line). Upstream GA is v25.1 as of 2026-09-04 — the CLI is one major version behind by choice; v24 sunsets May 2027."
   },
   {
     "api": "Merchant API",
@@ -21,7 +25,9 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "merchant-api.md"
+    "kb_file": "merchant-api.md",
+    "last_verified": "2026-09-04",
+    "notes": "Legacy Content API for Shopping v2.1 sunset 2026-08-18; progressive errors since 2026-09-01. gads-cli never called it."
   },
   {
     "api": "GA4 Data API",
@@ -34,7 +40,8 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "ga4.md"
+    "kb_file": "ga4.md",
+    "last_verified": "2026-09-04"
   },
   {
     "api": "GA4 Admin API",
@@ -47,7 +54,8 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "ga4.md"
+    "kb_file": "ga4.md",
+    "last_verified": "2026-09-04"
   },
   {
     "api": "Google Business Profile - Account Management API",
@@ -59,7 +67,8 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "gbp.md"
+    "kb_file": "gbp.md",
+    "last_verified": "2026-09-04"
   },
   {
     "api": "Google Business Profile - Business Information API",
@@ -71,7 +80,8 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "gbp.md"
+    "kb_file": "gbp.md",
+    "last_verified": "2026-09-04"
   },
   {
     "api": "Google Business Profile - Performance API",
@@ -83,7 +93,8 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "gbp.md"
+    "kb_file": "gbp.md",
+    "last_verified": "2026-09-04"
   },
   {
     "api": "Google Business Profile - Legacy My Business v4 (Reviews/Posts)",
@@ -95,7 +106,8 @@
     ],
     "status": "legacy-active",
     "sunset_date_or_null": null,
-    "kb_file": "gbp.md"
+    "kb_file": "gbp.md",
+    "last_verified": "2026-09-04"
   },
   {
     "api": "Google Search Console API",
@@ -108,18 +120,23 @@
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "search-console.md"
+    "kb_file": "search-console.md",
+    "last_verified": "2026-09-04",
+    "canonical_base_url": "https://searchconsole.googleapis.com/webmasters/v3",
+    "notes": "Discovery doc revision 20260902 makes searchconsole.googleapis.com the canonical host for all resources. base_url above is the legacy www.googleapis.com host the CLI still sends; both live, no deprecation notice found."
   },
   {
     "api": "Data Manager API",
     "slug": "data-manager",
-    "current_version": "v1.7",
+    "current_version": "v1.8",
     "base_url": "https://datamanager.googleapis.com/v1",
     "oauth_scopes": [
       "https://www.googleapis.com/auth/datamanager"
     ],
     "status": "active",
     "sunset_date_or_null": null,
-    "kb_file": "data-manager-api.md"
+    "kb_file": "data-manager-api.md",
+    "last_verified": "2026-09-04",
+    "release_date": "2026-07-30"
   }
 ]

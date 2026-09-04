@@ -54,13 +54,32 @@ Account-level negative keywords (blocks a term in EVERY campaign, vs. campaign-l
 Behavior change: `gads batch-mutate` now sends `partialFailure=true` — a partially-failed batch
 applies its successful operations instead of being rejected atomically, and exits non-zero.
 
-New env vars: `GADS_HTTP_RETRIES` (default 4), `GADS_HTTP_TIMEOUT` (default 30s).
+New env vars: `GADS_HTTP_RETRIES` (max attempts, default 4), `GADS_HTTP_TIMEOUT` (seconds, default 30).
+
+Retry semantics: 429 is always retried (a throttled request was never processed). 5xx, connection
+errors and timeouts are retried only for idempotent calls. Idempotency is fail-closed — a POST is
+treated as a mutation and NOT retried unless its URL is on an explicit read allowlist. Backoff is
+exponential with jitter, capped at 60s per sleep, and honours `Retry-After`.
+
+Auth two-step (headless/WSL, no local listener):
+`gads auth login --print-url-only` → open URL, grant → `gads auth login --callback-url '<pasted URL>'`
+(or `--code '<code>'`). `--port` (default 9090) must match both steps. Scope-regression guard applies.
+
+Merchant pagination: `merchant products` / `product-status` page the FULL catalogue (pageSize=1000,
+follow nextPageToken, 100-page cap). `--limit` trims the printed table only; `--json` is always
+complete and carries `truncated`. Merchant reports use MCQL, not GAQL.
 
 ## Account
 
 - Client: Talas Ads (355-285-6345)
 - Manager: 670-695-5825
-- Currency: AED | API version: v24
+- Currency: AED | API version: v24 (pinned; upstream GA is v25.1 as of 2026-09-04, v24 sunsets May 2027)
+
+## Command count
+
+129 command paths across 18 groups + 16 top-level commands, of which 6 (`ads query|perf|config|
+refresh|snapshot|log`) are aliases — 123 distinct commands. `gads catalog --json` is authoritative;
+do not hardcode this number.
 
 ## Also see mads-cli
 

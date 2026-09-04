@@ -11,16 +11,18 @@
 
 | Version | Status |
 |---------|--------|
-| v1.7    | Current (2026-05-28) |
+| v1.8    | **Current (2026-07-30)** |
+| v1.7    | 2026-05-28 |
 | v1.3    | First GA release (2025-10-06) |
 
 `gads-cli` calls the unversioned-minor `v1` path segment (`https://datamanager.googleapis.com/v1/...`)
 — minor releases (v1.3 → v1.7) are additive/non-breaking on the same `/v1/` URL, matching the same
 pattern documented for Google Ads REST minor versions in `google-ads.md`.
 
-**Note on sourcing:** the version/date figures above (v1.3 GA 2025-10-06, current v1.7 2026-05-28)
-and the quota figures below were supplied as pre-verified facts at build time, not independently
-re-fetched in this session. The request/response **schemas** in this document (Destination, Event,
+**Note on sourcing:** the version table above was re-verified on **2026-09-04** against
+`https://developers.google.com/data-manager/api/reference` (release-notes page) — v1.8 dated
+2026-07-30 is current, superseding the v1.7 figure this file previously carried. The quota figures
+below were supplied as pre-verified facts at build time and were **not** re-fetched on 2026-09-04. The request/response **schemas** in this document (Destination, Event,
 AudienceMember, UserData, UserIdentifier, Consent, Encoding) were fetched directly from
 `developers.google.com/data-manager/api/reference/rest/v1/*` on 2026-07-02 and are current as of
 that fetch.
@@ -289,17 +291,27 @@ Source: https://developers.google.com/data-manager/api/reference/rest/v1/Encodin
 ### Response schema (both methods)
 
 ```json
-{ "requestId": "string" }
+{
+  "requestId": "string",
+  "fieldWarnings": [ { /* FieldWarning */ } ]
+}
 ```
 
-That's the entire response body on success. See Known Limitation below.
+**Changed in v1.8 (2026-07-30):** the response is no longer `requestId`-only. `IngestEventsResponse`
+and `IngestAudienceMembersResponse` both gained a `fieldWarnings` array of `FieldWarning` objects.
+Verified 2026-09-04 against the live discovery document
+`https://datamanager.googleapis.com/$discovery/rest?version=v1` (revision `20260828`), which shows
+both properties on both schemas. `fieldWarnings` reports **non-blocking validation issues on
+optional fields only** — it is not per-event success/failure. See Known Limitation below.
 
 ---
 
-## ⚠️ Known Limitation — asynchronous, `requestId`-only response
+## ⚠️ Known Limitation — ingestion is asynchronous; the response carries no per-item outcome
 
-**Both `events:ingest` and `audienceMembers:ingest` return only `{"requestId": "..."}` on a 200.**
-There is no synchronous per-event or per-member success/failure detail in the response — unlike the
+**Both `events:ingest` and `audienceMembers:ingest` return `requestId` plus (since v1.8)
+`fieldWarnings` on a 200 — and nothing else.** `fieldWarnings` flags optional-field validation
+problems; it does **not** tell you which events were matched or ingested. There is still no
+synchronous per-event or per-member success/failure detail in the response — unlike the
 legacy Ads REST `uploadClickConversions` (`ads_upload_click_conversions()` in `gads_lib/ads.py`),
 which returns a `partialFailureError` with per-conversion error detail in the same response, and
 unlike `OfflineUserDataJobService` (`audience_upload_csv()`), whose job resource can be polled for a
@@ -310,9 +322,10 @@ audience-upload` can only ever report *"N events/members submitted, ingestion is
 per-item status available in this response"* — never a false "✓ N conversions uploaded
 successfully" claim. Both CLI commands are deliberately worded this way (see
 `tests/test_gads.py::TestDataManagerConversionIngestCli::test_json_output_never_claims_per_event_success`).
-There is currently no documented Data Manager endpoint this CLI implements for later checking a
-`requestId`'s outcome (a `requestStatus:retrieve` method exists in the REST method index but is not
-wired up here) — verify match/ingestion success indirectly, e.g. via `gads conversion perf` a day or
+The API *does* expose `POST /v1/requestStatus:retrieve` for looking up a `requestId`'s outcome
+later — confirmed present in the live discovery document on 2026-09-04, and available since v1.3 —
+but **gads-cli does not implement it** (open coverage gap; wiring it up would let the CLI report a
+terminal ingestion status instead of only "submitted") — verify match/ingestion success indirectly, e.g. via `gads conversion perf` a day or
 two later, the same attribution-lag caveat that already applies to every other conversion path in
 this account.
 

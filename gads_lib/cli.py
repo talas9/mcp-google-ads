@@ -2558,7 +2558,7 @@ def audience_group():
 
 @cli.group("report")
 def report_group():
-    """Specialized reports (geo, hourly, devices, search terms)."""
+    """Specialized reports (geo, hourly, devices, search terms, shopping)."""
     pass
 
 @cli.group("data-manager")
@@ -3222,9 +3222,15 @@ def keyword_forecast_cmd(keywords, language, geo, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def asset_list(asset_type, as_json):
     """List assets."""
-    where = "WHERE asset.type != 'UNSPECIFIED'"
+    # Do NOT filter on asset.type != 'UNSPECIFIED': the Google Ads API rejects any
+    # comparison against the UNSPECIFIED enum constant with
+    # queryError: PROHIBITED_ENUM_CONSTANT ("Filtering by 'UNSPECIFIED' is not
+    # supported"), which made this command fail 100% of the time. Verified against
+    # the live v24 API on 2026-09-04. Real assets never carry the UNSPECIFIED type,
+    # so there is nothing to exclude.
+    where = ""
     if asset_type:
-        where += f" AND asset.type = '{asset_type.upper()}'"
+        where = f"WHERE asset.type = '{asset_type.upper()}'"
     results = run_gaql(get_credentials(), f"""
         SELECT asset.id, asset.name, asset.type, asset.resource_name
         FROM asset {where} ORDER BY asset.type, asset.name""")

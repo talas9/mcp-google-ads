@@ -1077,10 +1077,24 @@ When `nextPageToken` is absent from the response, you've reached the last page.
 
 ### Quotas & Rate Limits
 
-- Rate limits exist but specific QPM values are not published in the reference docs
+**Corrected 2026-09-04 — QPM values ARE published.** A previous revision of this file said they were
+not; that was wrong. Official figures from https://developers.google.com/my-business/content/limits
+(fetched 2026-09-04):
+
+| Limit | Value |
+|-------|-------|
+| Default QPM — Account Management, Business Information, Performance (also Verifications, Lodging, Place Actions, Notifications) | **300 QPM** |
+| Business Information — `CreateLocation` | 300 QPD |
+| Business Information — `SearchGoogleLocation` | 300 QPD |
+| Business Information — `UpdateLocation` | 10,000 QPD |
+| Edits per profile | 10 per minute — **not increasable** |
+
 - After enabling any GBP API in Google Cloud Console, **default quota is 0** — API calls will
-  return HTTP 429 (RESOURCE_EXHAUSTED) until access is approved (see Access Requirements below)
-- Source: https://developers.google.com/my-business/reference/businessinformation/rest (quota note)
+  return HTTP 429 (RESOURCE_EXHAUSTED) until access is approved (see Access Requirements below).
+  Official wording, re-confirmed 2026-09-04: *"If you have a quota of 0 after enabling the API,
+  please request for GBP API access."*
+- Sources: https://developers.google.com/my-business/content/limits (fetched 2026-09-04);
+  https://developers.google.com/my-business/reference/businessinformation/rest (quota note)
 
 ---
 
@@ -1098,10 +1112,12 @@ enabling the API in Google Cloud Console.
    - Describe your use case and specific endpoints needed
 4. Wait for approval (typically 7–10 business days, but can range from 4 days to 6 weeks)
 
-**Prerequisites before applying:**
+**Prerequisites before applying** (four, not three — the website requirement was missing from a
+previous revision; re-verified 2026-09-04 against https://developers.google.com/my-business/content/prereqs):
 - Business profile must be at least 60 days old
 - Profile must be verified
 - You must be the account owner
+- The business must **have a website listed on the Google Business Profile**
 
 **What happens without approval:**
 - API calls return HTTP 429 (`RESOURCE_EXHAUSTED`) — looks like a rate limit but is actually zero quota
@@ -1266,10 +1282,11 @@ every call returns HTTP 429 (`RESOURCE_EXHAUSTED`) until Google manually approve
 
 4. Wait for approval: typically 7-10 business days; can range from 4 days to 6 weeks.
 
-**Prerequisites before applying:**
+**Prerequisites before applying** (re-verified 2026-09-04 — https://developers.google.com/my-business/content/prereqs):
 - Business profile must exist and be at least 60 days old
 - Profile must be **verified** (physical postcard or video verification)
 - Applicant must be the **owner** of the GBP account, not just a manager
+- The business must **have a website listed on the profile**
 
 **What happens without approval:**
 
@@ -2269,8 +2286,11 @@ in one call instead of one `getDailyMetricsTimeSeries` call per metric.
 
 #### Quota Limits
 
-Specific QPM (queries per minute) values are not published for GBP APIs. Observed practical
-limits from the field:
+**Published limit: 300 QPM** by default for Account Management, Business Information and
+Performance, plus per-method QPD caps and a non-increasable 10 edits/min per profile — see the
+"Quotas & Rate Limits" table earlier in this file (verified 2026-09-04 against
+https://developers.google.com/my-business/content/limits). The earlier "not published" claim in
+this file was incorrect. Additional observed practical limits from the field:
 - Bulk listing operations: pause approximately 1 second between pages when fetching many pages
 - Mutation operations (PATCH, PUT, POST): do not send more than 1 per second per location
 - Reviews pagination: 50 reviews per page is the max; paginate sequentially

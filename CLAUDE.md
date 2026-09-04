@@ -135,9 +135,20 @@ GOOGLE_GA4_PROPERTY_ID=271773771                 # GA4 property ID
 # Optional configuration
 GADS_TIMEZONE=Asia/Dubai                         # Default: UTC
 GADS_CURRENCY=AED                                # Default: USD
-GADS_API_VERSION=v24                             # Default: v24
-GADS_HTTP_RETRIES=4                              # Default: 4 (read/retryable requests only)
+GADS_API_VERSION=v24                             # Default: v24 (upstream GA is v25.1 as of 2026-09-04; v24 sunsets May 2027)
+GADS_HTTP_RETRIES=4                              # Default: 4 — MAX ATTEMPTS, not extra attempts
 GADS_HTTP_TIMEOUT=30                             # Default: 30 (seconds, per-request)
+
+# Retry semantics (gads_lib/http.py):
+#   429            -> always retried, mutations included (a throttled request was never processed)
+#   5xx / timeouts -> retried ONLY for idempotent calls (the write may already have landed)
+#   other 4xx      -> never retried
+#   Idempotency is FAIL-CLOSED: a POST is a presumed mutation and is not retried unless its URL is
+#   on the read allowlist (:search, :searchStream, :runReport, :runRealtimeReport, :batchRunReports,
+#   :runPivotReport, :checkCompatibility, :inspect, :generateKeywordIdeas,
+#   :generateKeywordForecastMetrics, /searchAnalytics/query). GBP v4, Merchant developerRegistration
+#   and GA4 Admin keyEvents POST to URLs with no mutate marker -- a denylist would have retried them.
+#   Backoff is exponential with jitter, each sleep capped at 60s, Retry-After honoured.
 
 # Paths (auto-detected by default)
 GADS_CREDENTIALS_PATH=credentials/google-ads-oauth.json
@@ -151,7 +162,7 @@ GADS_SNAPSHOTS_DIR=snapshots
 gads-cli/
 ├── gads                     # Main CLI entry point (thin shim)
 ├── gads_lib/
-│   ├── cli.py              # Click command groups and entry point (129 commands)
+│   ├── cli.py              # Click command groups and entry point (129 command paths, 123 distinct)
 │   ├── config.py           # Environment-driven configuration (Ads v24 default)
 │   ├── auth.py             # OAuth credential management + refresh
 │   ├── ads.py              # Google Ads REST client + GAQL runner (v24)
@@ -173,7 +184,7 @@ gads-cli/
 │   ├── output.py           # Table/JSON formatting + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py         # Timezone-aware time helpers
 ├── kb/                     # API knowledge base (6 API docs + INDEX.md + manifest.json)
-├── tests/                  # 382 tests — offline/CI-safe, covers all service modules
+├── tests/                  # 384 tests — offline/CI-safe, covers all service modules
 ├── fetch_daily.py          # Cron-friendly daily data fetcher
 ├── generate_token.py       # Interactive OAuth token generator (6 scopes)
 ├── pyproject.toml          # Package metadata
@@ -196,7 +207,7 @@ gads-cli/
 
 4. **Sitelink finalUrls placement** — when creating a sitelink asset, `finalUrls` must be at the top level of the create object, NOT nested inside `sitelinkAsset`. Nesting causes silent URL drops.
 
-5. **Customer Match uploads and April 2026 deprecation** — starting April 1, 2026, `OfflineUserDataJobService` uploads (`audience upload`) fail if your token has never sent a successful Customer Match request. Pre-upload before that date, or use `gads data-manager audience-upload` — the modern Data Manager API path (`gads_lib/datamanager.py`, `kb/data-manager-api.md`), unaffected by this deprecation. It's a parallel command, not an in-place replacement: same CSV shape (`Phone,Email,First Name,Last Name,Country`), but its `events:ingest`/`audienceMembers:ingest` response is asynchronous (`{requestId}` only, no per-row confirmation) unlike the legacy job-status-pollable path.
+5. **Customer Match uploads — the restriction is ALREADY LIVE (since 2026-04-01)** — `OfflineUserDataJobService` uploads (`audience upload`) fail if the developer token never sent a successful Customer Match request in the 2025-10-01 → 2026-03-31 window. This is not a future deadline. **Whether the Talas token qualifies is UNVERIFIED — no Customer Match call has been made from it in any audit — so treat `gads audience upload` as at-risk until a live call proves otherwise.** Fallback: `gads data-manager audience-upload` — the modern Data Manager API path (`gads_lib/datamanager.py`, `kb/data-manager-api.md`), unaffected by this deprecation. It's a parallel command, not an in-place replacement: same CSV shape (`Phone,Email,First Name,Last Name,Country`), but its `events:ingest`/`audienceMembers:ingest` response is asynchronous — `requestId` plus, since Data Manager v1.8 (2026-07-30), a `fieldWarnings` array for optional-field validation issues. Neither gives per-row ingestion confirmation, unlike the legacy job-status-pollable path. The API exposes `requestStatus:retrieve` for a later outcome lookup, but the CLI does not implement it yet.
 
 6. **Asset creation is two-step** — create the asset via `assets:mutate`, then link it to the campaign via `campaignAssets:mutate`. Cannot do both in one call.
 
@@ -230,7 +241,8 @@ Each endpoint must use its correct base URL or requests fail.
 ### Merchant Center (Merchant API v1)
 
 - Uses **Merchant API v1** (`merchantapi.googleapis.com`), the successor to the
-  Content API for Shopping v2.1 (which sunsets **2026-08-18**). OAuth scope is
+  Content API for Shopping v2.1 (which **already sunset on 2026-08-18**, with
+  progressive errors since 2026-09-01). OAuth scope is
   unchanged: `https://www.googleapis.com/auth/content`.
 - **No single base URL** — each sub-API has its own version segment before the
   resource name: `accounts/v1` (account, issues, shippingSettings,
@@ -310,8 +322,8 @@ Each endpoint must use its correct base URL or requests fail.
 ./gads keyword ideas --keywords "tesla parts" --language en --geo AE
 ./gads keyword forecast --keywords "tesla parts" --language en
 
-# Customer Match upload (deprecated April 2026)
-./gads audience upload contacts.csv --list-name "Website Visitors" --create-if-missing
+# Customer Match upload (restricted since 2026-04-01 — see Known Gotchas)
+./gads audience upload contacts.csv --list-name "Website Visitors" --create
 
 # Google Business Profile
 ./gads gbp accounts
@@ -336,12 +348,16 @@ Each endpoint must use its correct base URL or requests fail.
 ./gads gbp ads-daily -d 14
 
 # Google Search Console
+# NOTE: -s must be a siteUrl the token actually owns, EXACTLY as `gsc sites` prints it.
+# This account's properties are DOMAIN properties: "sc-domain:talas.ae" and
+# "sc-domain:shop.talas.ae". Passing the URL-prefix form "https://shop.talas.ae/"
+# returns HTTP 403 "User does not have sufficient permission for site" (verified 2026-09-04).
 ./gads gsc sites
-./gads gsc queries -s "https://shop.talas.ae/" -d 28
-./gads gsc pages -s "https://shop.talas.ae/" -d 28
-./gads gsc performance -s "https://shop.talas.ae/" -d 28
-./gads gsc inspect "https://shop.talas.ae/products/tesla" -s "https://shop.talas.ae/"
-./gads gsc sitemaps -s "https://shop.talas.ae/"
+./gads gsc queries -s "sc-domain:shop.talas.ae" -d 28
+./gads gsc pages -s "sc-domain:shop.talas.ae" -d 28
+./gads gsc performance -s "sc-domain:shop.talas.ae" -d 28
+./gads gsc inspect "https://shop.talas.ae/products/tesla" -s "sc-domain:shop.talas.ae"
+./gads gsc sitemaps -s "sc-domain:shop.talas.ae"
 
 # Merchant Center
 ./gads merchant account

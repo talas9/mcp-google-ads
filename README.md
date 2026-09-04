@@ -14,7 +14,9 @@ Built for AI coding agents (Claude Code, Cursor, etc.) and human operators. Ever
 
 ## Features
 
-**129 commands** across 20 groups covering the full Google Ads operational surface:
+**129 command paths across 18 groups plus 16 top-level commands** — counted from
+`gads catalog --json`, which is the authoritative list. Six of those paths (`ads query|perf|config|refresh|snapshot|log`)
+are aliases that re-expose top-level commands under an `ads` namespace, so there are **123 distinct commands**:
 
 | Group | Commands | Description |
 |-------|----------|-------------|
@@ -320,6 +322,43 @@ All configuration via environment variables or `.env` file. See [`.env.example`]
 
 > **GBP, GSC, Merchant Center, and GA4 commands do NOT need a developer token** — only OAuth credentials.
 
+### Retries, timeouts and idempotency
+
+All HTTP goes through one shared layer (`gads_lib/http.py`) with a process-wide connection-pooled
+session. `GADS_HTTP_RETRIES` (default `4`) is the **max attempts**, not extra attempts, and
+`GADS_HTTP_TIMEOUT` (default `30`) is per request in seconds. Backoff is exponential with jitter,
+and any single sleep is capped at 60s; a `Retry-After` header is honoured in both its seconds and
+HTTP-date forms.
+
+What actually gets retried:
+
+| Condition | Retried? |
+|-----------|----------|
+| HTTP 429 | **Always**, whether or not the call is a mutation. A 429 means the server throttled and did not process the request, so a retry cannot double-apply it. |
+| HTTP 500 / 502 / 503 / 504 | Only for idempotent calls. These are ambiguous — the mutation may already have been applied server-side. |
+| Connection errors and timeouts | Only for idempotent calls, same reasoning. |
+| Any other 4xx | Never. |
+
+**Idempotency is fail-closed.** Every non-POST method is treated as safe to retry. A POST is treated
+as a **mutation and is not retried** unless its URL matches an explicit allowlist of read endpoints
+(`:search`, `:searchStream`, `:runReport`, `:runRealtimeReport`, `:batchRunReports`, `:runPivotReport`,
+`:checkCompatibility`, `:inspect`, `:generateKeywordIdeas`, `:generateKeywordForecastMetrics`, and
+`/searchAnalytics/query`). This is deliberately an allowlist, not a denylist of known-mutate suffixes:
+Google Business Profile v4, Merchant `developerRegistration` and GA4 Admin `keyEvents` all POST to
+URLs with no mutate marker at all, and a denylist would have silently retried them. An unrecognised
+POST costs you a manual retry; it never risks a duplicated mutation such as a double-posted GBP post.
+
+### Merchant Center pagination
+
+`merchant products` and `merchant product-status` page the **entire** catalogue before printing —
+they do not show only the first page. Both call the same `products` resource (Merchant API v1 has no
+standalone `productstatuses` endpoint; status is folded into `products`), request `pageSize=1000`
+(the documented maximum), and follow `nextPageToken` to exhaustion behind a 100-page safety cap.
+`merchant report` and `report-product-performance` page the reports sub-API the same way. If the cap
+is ever hit with a token still outstanding, the command prints a truncation warning to stderr and
+`--json` sets `"truncated": true`. `--limit` only trims the **printed table**; `--json` always
+carries the complete set, plus a `summary` object for `product-status`.
+
 ### Which commands need what
 
 | Commands | Dev token | OAuth scope | Min access level |
@@ -424,7 +463,7 @@ gads doctor            # Verify everything
 > ```
 > `--port` (default `9090`) must match across both steps. This goes through the same scope-regression guard as the browser flow — a token missing scopes vs. the existing one is refused unless `--allow-partial` is passed.
 
-> ⚠️ **Customer Match deprecation:** Starting April 1, 2026, `audience upload` will fail if your token has never sent a successful Customer Match request. Upload before that date, or use `gads data-manager audience-upload` (the modern Data Manager API path — see [`kb/data-manager-api.md`](kb/data-manager-api.md)), which is unaffected by this deprecation.
+> ⚠️ **Customer Match restriction — already in force.** Since **April 1, 2026** `audience upload` fails if your developer token never sent a successful Customer Match request in the qualifying window (2025-10-01 to 2026-03-31). This is not a future deadline; it is live today. If your token was not already using Customer Match, use `gads data-manager audience-upload` (the Data Manager API path — see [`kb/data-manager-api.md`](kb/data-manager-api.md)), which is unaffected.
 
 ---
 
@@ -436,7 +475,7 @@ gads-cli/
 ├── gads.sh               # Shell wrapper with .env loading
 ├── gads_lib/
 │   ├── __init__.py       # Version + public API exports
-│   ├── cli.py            # All Click command groups (129 commands)
+│   ├── cli.py            # All Click command groups (129 command paths, 123 distinct)
 │   ├── config.py         # Scope-aware env config
 │   ├── auth.py           # OAuth credential management
 │   ├── ads.py            # Google Ads REST client + GAQL + mutations (Ads v24)
@@ -453,7 +492,7 @@ gads-cli/
 │   ├── output.py         # Table/JSON formatters + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py       # Timezone-aware helpers
 ├── kb/                   # API knowledge base (6 md files + INDEX.md + manifest.json)
-├── tests/                # 382 tests (offline/CI-safe)
+├── tests/                # 384 tests (offline/CI-safe)
 ├── fetch_daily.py        # Cron-friendly daily data fetcher
 ├── generate_token.py     # OAuth token generator (6 scopes incl. webmasters.readonly)
 ├── scripts/install.sh    # Interactive installer
@@ -468,6 +507,26 @@ gads-cli/
 ```
 
 Uses Google REST APIs directly (`requests` + `google-auth`) — no protobuf, no `google-ads` client library.
+
+### Dependency version floors
+
+`pyproject.toml` pins minimum versions, raised on 2026-09-04 to the then-current releases:
+
+| Package | Floor |
+|---------|-------|
+| `click` | `>=8.5.0` |
+| `requests` | `>=2.34.2` |
+| `google-auth` | `>=2.57.1` |
+| `google-auth-oauthlib` | `>=1.4.1` |
+| `python-dotenv` | `>=1.2.3` |
+| `pytest` (dev) | `>=9.1.1` |
+| `pytest-cov` (dev) | `>=7.1.0` |
+
+> ⚠️ These are floors for a fresh `pip install`, and the Talas operator machine does **not** meet them —
+> it runs `click` 8.1.7, `google-auth` 2.35.0, `google-auth-oauthlib` 1.2.4, `python-dotenv` 1.2.2 and
+> `pytest` 9.0.3 from a shared system environment (verified 2026-09-04). The CLI and its 384 tests run
+> correctly on those older libraries; the floors describe the supported install, not what is deployed.
+> Upgrading that shared environment would affect other tools on the machine, so it has not been done.
 
 ---
 

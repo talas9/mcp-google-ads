@@ -2,7 +2,17 @@
 
 ## Status & Versions
 
-_Last verified against official docs: 2026-07-01._
+_Last verified against official docs: **2026-09-04** (previous pass 2026-07-01)._
+
+**2026-09-04 re-verification result: no drift.** Checked against the live discovery directory and
+discovery documents fetched that day: Data API has only `v1beta` (`preferred: true`, revision
+`20260902`, `baseUrl https://analyticsdata.googleapis.com/`) — no `v1` GA release exists. Admin API
+exposes both `v1alpha` and `v1beta` with `v1beta` `preferred: true` (revision `20260901`), and
+`properties.keyEvents` on v1beta carries `get / patch / delete / list / create`. The Data API quota
+table later in this file (200,000 tokens/property/day, 40,000/property/hour, 14,000/project/property/hour,
+10 concurrent, 10 server errors/hour, 120 potentially-thresholded/hour; Analytics 360 at 10x on
+tokens/concurrency/errors) matches the official quotas page exactly. Scopes `analytics.readonly`
+(reads) and `analytics.edit` (Admin key-event writes) confirmed on the OAuth scopes page.
 
 ### Data API
 - **v1beta** — stable, production-ready; the primary version used for reporting

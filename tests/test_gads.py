@@ -3697,3 +3697,46 @@ class TestAnalyzeWastedSpendChannelSegmentation:
 
         flagged_terms = {s["search_term"] for s in result["search_terms"]}
         assert "tesla parts uae" not in flagged_terms
+
+
+class TestAssetListQuery:
+    """Regression: `asset list` must never filter on the UNSPECIFIED enum constant.
+
+    The Google Ads API rejects any comparison against UNSPECIFIED with
+    queryError PROHIBITED_ENUM_CONSTANT ("Filtering by 'UNSPECIFIED' is not
+    supported"), which made `gads asset list` fail 100% of the time against the
+    live v24 API (observed 2026-09-04).
+    """
+
+    def _run_asset_list(self, args):
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+
+        captured = {}
+
+        def fake_run_gaql(creds, query, *a, **kw):
+            captured["query"] = query
+            return []
+
+        with patch("gads_lib.cli.run_gaql", side_effect=fake_run_gaql), \
+             patch("gads_lib.cli.get_credentials", return_value=MagicMock()):
+            result = CliRunner().invoke(cli, ["asset", "list"] + args)
+        return result, captured.get("query", "")
+
+    def test_asset_list_query_has_no_unspecified_filter(self):
+        result, query = self._run_asset_list([])
+        assert result.exit_code == 0, result.output
+        assert "UNSPECIFIED" not in query, (
+            f"asset list must not filter on UNSPECIFIED; got query: {query}"
+        )
+        assert "WHERE" not in query.upper(), (
+            f"unfiltered asset list should emit no WHERE clause; got: {query}"
+        )
+
+    def test_asset_list_type_filter_still_applied(self):
+        result, query = self._run_asset_list(["--type", "text"])
+        assert result.exit_code == 0, result.output
+        assert "UNSPECIFIED" not in query
+        assert "WHERE asset.type = 'TEXT'" in query, (
+            f"--type must produce an uppercased equality filter; got: {query}"
+        )
