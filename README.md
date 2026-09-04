@@ -330,7 +330,7 @@ All configuration via environment variables or `.env` file. See [`.env.example`]
 | `GOOGLE_GA4_PROPERTY_ID` | GA4 commands | Property ID (digits only) |
 | `GADS_TIMEZONE` | Optional (default: `UTC`) | IANA timezone (e.g. `America/New_York`) |
 | `GADS_CURRENCY` | Optional (default: `USD`) | ISO 4217 code (e.g. `AED`, `EUR`) |
-| `GOOGLE_ADS_API_VERSION` | Optional (default: `v24`) | API version |
+| `GOOGLE_ADS_API_VERSION` | Optional (default: `v25`) | API version (major URL segment; `v25.1` is NOT a valid segment) |
 | `GADS_HTTP_RETRIES` | Optional (default: `4`) | Max attempts for retryable HTTP requests (429/5xx/connection errors) |
 | `GADS_HTTP_TIMEOUT` | Optional (default: `30`) | Per-request timeout in seconds |
 
@@ -492,7 +492,7 @@ gads-cli/
 │   ├── cli.py            # All Click command groups (129 command paths, 123 distinct)
 │   ├── config.py         # Scope-aware env config
 │   ├── auth.py           # OAuth credential management
-│   ├── ads.py            # Google Ads REST client + GAQL + mutations (Ads v24)
+│   ├── ads.py            # Google Ads REST client + GAQL + mutations (Ads v25)
 │   ├── gbp.py            # GBP client (4 base URLs: account mgmt, business info, legacy v4, performance)
 │   ├── gsc.py            # Search Console client (webmasters/v3 + URL Inspection v1)
 │   ├── merchant.py       # Merchant Center client (Merchant API v1)

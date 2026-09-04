@@ -2,18 +2,19 @@
   {
     "api": "Google Ads REST API",
     "slug": "google-ads",
-    "current_version": "v24.2",
+    "current_version": "v25.1",
     "base_url": "https://googleads.googleapis.com/{version}",
     "oauth_scopes": [
       "https://www.googleapis.com/auth/adwords"
     ],
     "status": "active",
-    "sunset_date_or_null": "2027-05",
+    "sunset_date_or_null": "2027-08",
     "kb_file": "google-ads.md",
     "last_verified": "2026-09-04",
     "latest_upstream_version": "v25.1",
     "latest_upstream_release_date": "2026-08-19",
-    "pinned_version_note": "current_version tracks the version gads-cli pins and this KB documents (v24 line). Upstream GA is v25.1 as of 2026-09-04 — the CLI is one major version behind by choice; v24 sunsets May 2027."
+    "pinned_version_note": "current_version is the Google Ads release line gads-cli targets and this KB documents. Only the MAJOR is a URL path segment: config.py pins GOOGLE_ADS_API_VERSION=v25 and GOOGLE_ADS_API_VERSION=v25.1 returns a 404 HTML page from Google (verified live 2026-09-04). Minor releases (v25.1, v25.2) ride the same /v25/ path with no code change. v25 is upstream GA as of 2026-09-04 and sunsets 2027-08.",
+    "url_path_segment": "v25"
   },
   {
     "api": "Merchant API",

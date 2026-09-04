@@ -533,13 +533,13 @@ class TestVersion:
                 f"Version part {part!r} is not numeric in {gads_lib.__version__!r}"
             )
 
-    def test_version_is_3_10_0(self):
-        """gads_lib.__version__ == '3.10.0'."""
+    def test_version_is_3_11_0(self):
+        """gads_lib.__version__ == '3.11.0'."""
         import gads_lib
 
-        assert gads_lib.__version__ == "3.10.0", (
-            f"Expected version 3.10.0, got {gads_lib.__version__!r}. "
-            "Bump __version__ in gads_lib/__init__.py when releasing v3.10.0."
+        assert gads_lib.__version__ == "3.11.0", (
+            f"Expected version 3.11.0, got {gads_lib.__version__!r}. "
+            "Bump __version__ in gads_lib/__init__.py when releasing v3.11.0."
         )
 
 
@@ -1259,7 +1259,11 @@ class TestAdsMutateUrlConstruction:
             f"URL must NOT contain snake_case 'campaign_criterion', got: {called_url}"
         )
         assert "googleads.googleapis.com" in called_url
-        assert "v24" in called_url
+        # Assert against the configured version, not a literal -- this test is about
+        # snake_case -> camelCase resource mapping, and must not need editing on
+        # every API version bump.
+        from gads_lib.config import API_VERSION
+        assert f"/{API_VERSION}/" in called_url
 
     def test_snake_case_ad_group_criterion_maps_to_ad_group_criteria(self, fake_creds):
         """'ad_group_criterion' (snake) must map to 'adGroupCriteria'."""
@@ -3891,3 +3895,136 @@ class TestGbpPerfAllMissingValues:
         assert result.exit_code == 0, result.output
         assert "—" not in result.output, result.output
         assert "not backfilled yet" not in result.output, result.output
+
+
+class TestApiVersionPinAndCurrency:
+    """The Google Ads version pin, and `doctor`'s staleness check for it.
+
+    Context: the v24 -> v25 bump (2026-09-04). Two invariants are load-bearing
+    here and both were verified live against the real account:
+      1. Only the MAJOR is a URL path segment. GOOGLE_ADS_API_VERSION=v25.1
+         builds /v25.1/ and Google answers with a 404 HTML page, not JSON.
+      2. `kb check` cannot detect a stale pin -- it compares the KB to the code,
+         which stays consistent even when both are a major behind upstream.
+    """
+
+    def test_default_api_version_is_v25(self, monkeypatch):
+        """config.API_VERSION defaults to v25 when the env var is unset."""
+        monkeypatch.delenv("GOOGLE_ADS_API_VERSION", raising=False)
+        import importlib
+        from gads_lib import config
+        importlib.reload(config)
+        try:
+            assert config.API_VERSION == "v25"
+        finally:
+            importlib.reload(config)
+
+    def test_pinned_version_is_a_bare_major_segment(self):
+        """The pin must be a bare major ('v25'), never a minor ('v25.1').
+
+        A dotted value is silently wrong: it produces a URL Google serves a 404
+        HTML page for, which surfaces as an opaque parse error rather than an
+        API error.
+        """
+        import re
+        from gads_lib.config import API_VERSION
+        assert re.fullmatch(r"v\d+", API_VERSION), (
+            f"GOOGLE_ADS_API_VERSION must be a bare major like 'v25', got {API_VERSION!r}. "
+            "Minor releases ride the same major's URL path."
+        )
+
+    def test_manifest_url_path_segment_matches_pinned_major(self):
+        """kb/manifest.json's url_path_segment must equal the major the code pins."""
+        import re
+        from gads_lib.kb import load_manifest
+        entry = next(e for e in load_manifest() if e["slug"] == "google-ads")
+        assert entry["url_path_segment"] == "v25"
+        # ...and current_version must be on that same major line.
+        assert re.match(r"^v25(\.\d+)?$", entry["current_version"])
+
+    def test_currency_check_ok_when_pin_matches_upstream(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_ADS_API_VERSION", "v25")
+        import importlib
+        from gads_lib import config, kb
+        importlib.reload(config)
+        try:
+            r = kb.api_version_currency()
+            assert r["status"] == "ok"
+            assert r["pinned"] == "v25"
+        finally:
+            monkeypatch.delenv("GOOGLE_ADS_API_VERSION", raising=False)
+            importlib.reload(config)
+
+    def test_currency_check_warns_when_pin_is_behind_upstream(self, monkeypatch):
+        """A pin one major behind the manifest's latest_upstream_version warns."""
+        monkeypatch.setenv("GOOGLE_ADS_API_VERSION", "v24")
+        import importlib
+        from gads_lib import config, kb
+        importlib.reload(config)
+        try:
+            r = kb.api_version_currency()
+            assert r["status"] == "warn"
+            assert r["pinned"] == "v24"
+            assert "behind" in r["detail"]
+        finally:
+            monkeypatch.delenv("GOOGLE_ADS_API_VERSION", raising=False)
+            importlib.reload(config)
+
+    def test_currency_check_ok_when_pin_is_ahead_of_manifest(self, monkeypatch):
+        """Pinning ahead of the recorded upstream is not a warning."""
+        monkeypatch.setenv("GOOGLE_ADS_API_VERSION", "v99")
+        import importlib
+        from gads_lib import config, kb
+        importlib.reload(config)
+        try:
+            assert kb.api_version_currency()["status"] == "ok"
+        finally:
+            monkeypatch.delenv("GOOGLE_ADS_API_VERSION", raising=False)
+            importlib.reload(config)
+
+    def test_currency_check_degrades_to_unknown_on_bad_version(self, monkeypatch):
+        """An unparseable pin must not raise -- doctor has to keep working."""
+        monkeypatch.setenv("GOOGLE_ADS_API_VERSION", "not-a-version")
+        import importlib
+        from gads_lib import config, kb
+        importlib.reload(config)
+        try:
+            assert kb.api_version_currency()["status"] == "unknown"
+        finally:
+            monkeypatch.delenv("GOOGLE_ADS_API_VERSION", raising=False)
+            importlib.reload(config)
+
+    def test_doctor_reports_api_version_currency_check(self, monkeypatch):
+        """`gads doctor --json` must carry the api_version_currency row."""
+        import json as _j
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+        monkeypatch.setenv("GOOGLE_ADS_API_VERSION", "v25")
+        res = CliRunner().invoke(cli, ["doctor", "--json"])
+        payload = _j.loads(res.output)
+        row = next(c for c in payload["checks"] if c["check"] == "api_version_currency")
+        assert row["status"] in ("ok", "warn", "unknown")
+
+
+class TestGbpAdsJsonOutput:
+    """Regression: `gbp ads-perf --json` / `ads-daily --json` raised NameError.
+
+    cli.py uses a local `import json as _json` convention throughout, but these
+    two --json branches called a bare `json.dumps`, which was never imported at
+    module level. Both commands crashed with an unhandled traceback on every
+    run (found 2026-09-04 during the v25 compatibility sweep).
+    """
+
+    def test_gbp_ads_json_branches_do_not_use_bare_json_module(self):
+        import inspect
+        from gads_lib import cli as cli_mod
+        assert not hasattr(cli_mod, "json"), (
+            "cli.py has no module-level `json` import; a bare `json.dumps` in any "
+            "command body is a NameError at runtime."
+        )
+        for fn in ("gbp_ads_perf", "gbp_ads_daily"):
+            obj = getattr(cli_mod, fn)
+            obj = getattr(obj, "callback", obj)  # unwrap the click.Command
+            src = inspect.getsource(obj)
+            assert "_json.dumps(rows" in src, f"{fn} must serialise via the local _json alias"
+            assert "\n        click.echo(json.dumps" not in src, f"{fn} still calls bare json.dumps"

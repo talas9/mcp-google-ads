@@ -175,3 +175,46 @@ def show_kb_file(slug_or_file):
     if not path.exists():
         raise FileNotFoundError(f"KB file not found for: {slug_or_file}")
     return path.read_text()
+
+
+def api_version_currency():
+    """Compare the pinned Google Ads major version against the manifest's upstream latest.
+
+    `check_drift` only proves the KB and the code agree — both can be a major
+    version behind Google and still report zero drift. This answers the other
+    question: is the pin itself stale?
+
+    Returns a dict: {"status": "ok"|"warn"|"unknown", "pinned", "latest_upstream",
+    "detail"}. Never raises — a malformed or missing manifest degrades to
+    "unknown" rather than breaking `gads doctor`.
+    """
+    from .config import API_VERSION
+
+    pinned = API_VERSION
+    try:
+        entry = next(e for e in load_manifest() if e.get("slug") == "google-ads")
+        latest = entry.get("latest_upstream_version")
+    except Exception:
+        return {"status": "unknown", "pinned": pinned, "latest_upstream": None,
+                "detail": "manifest unreadable — cannot compare against upstream"}
+
+    if not latest:
+        return {"status": "unknown", "pinned": pinned, "latest_upstream": None,
+                "detail": "manifest has no latest_upstream_version"}
+
+    def major(v):
+        m = re.match(r'^v(\d+)', v or "")
+        return int(m.group(1)) if m else None
+
+    pm, lm = major(pinned), major(latest)
+    if pm is None or lm is None:
+        return {"status": "unknown", "pinned": pinned, "latest_upstream": latest,
+                "detail": f"unparseable version ({pinned} vs {latest})"}
+
+    if pm < lm:
+        return {"status": "warn", "pinned": pinned, "latest_upstream": latest,
+                "detail": (f"pinned {pinned} is {lm - pm} major version(s) behind upstream "
+                           f"{latest} — set GOOGLE_ADS_API_VERSION or bump config.py")}
+
+    return {"status": "ok", "pinned": pinned, "latest_upstream": latest,
+            "detail": f"{pinned} is current with upstream {latest}"}

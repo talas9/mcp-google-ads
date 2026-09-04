@@ -12,7 +12,7 @@ Machine-readable summary: [`manifest.json`](./manifest.json).
 
 | # | API | KB file | Current version | Status / key sunset |
 |---|-----|---------|-----------------|----------------------|
-| 1 | **Google Ads REST API** | [google-ads.md](./google-ads.md) | **v25.1 GA (2026-08-19) is upstream latest**; CLI pins `v24` | Active. Per-version sunset dates **are** published: v23 → Feb 2027, **v24 → May 2027**, v25 → Aug 2027 (v21 already sunset 2026-08-05). CLI is 1 major behind by choice, with ~20 months of runway. **Customer Match offline-upload restriction has been IN FORCE since 2026-04-01** — token needs a prior successful Customer Match request; whether the Talas token qualifies is **unverified** (open risk). |
+| 1 | **Google Ads REST API** | [google-ads.md](./google-ads.md) | **v25.1 GA (2026-08-19) is upstream latest**; CLI pins `v25` (the URL segment for that line) | Active. Per-version sunset dates **are** published: v23 → Feb 2027, v24 → May 2027, **v25 → Aug 2027** (v21 already sunset 2026-08-05). CLI is current with upstream as of 2026-09-04. **Customer Match offline-upload restriction has been IN FORCE since 2026-04-01** — token needs a prior successful Customer Match request; whether the Talas token qualifies is **unverified** (open risk). |
 | 2 | **Merchant API** (new) | [merchant-api.md](./merchant-api.md) | v1 GA | Active. v1beta **discontinued 2026-02-28**. Legacy Content API for Shopping v2.1 **is already sunset (2026-08-18)** and has been returning progressive errors **since 2026-09-01** — gads-cli never called it, so no action. Reports sub-API uses **MCQL** (Merchant Center Query Language), *not* GAQL. |
 | 3 | **GA4 Data + Admin APIs** | [ga4.md](./ga4.md) | Data API v1beta (stable, no v1 GA exists); Admin API v1beta (`preferred`). CLI uses Data v1beta + Admin **v1beta** for key events (migrated from v1alpha in v3.8.0). | Active. No sunset announced. **2026-09-04 re-check: zero drift** — versions, base URLs, scopes and the full quota table all matched. |
 | 4 | **Google Business Profile** (suite) | [gbp.md](./gbp.md) | Account Mgmt v1, Business Information v1, Performance v1 (all active); legacy My Business v4 for Reviews/Posts | Mixed. v1 APIs active. Legacy **v4 Reviews/Posts still active, no sunset announced** (re-confirmed 2026-09-04); most other v4 resources already sunset. API access requires **allowlist approval** (un-allowlisted projects get HTTP 429 at 0 quota). **Quotas are published after all: 300 QPM default**, plus per-method QPD caps — a prior "not published" claim in the KB was wrong and is corrected. |
@@ -65,9 +65,11 @@ Data Manager base URL and scope; GBP v1/v4 base URLs, `fetchMultiDailyMetricsTim
    Customer Match call has ever been made from the Talas developer token in any audit, so whether it
    is allowlisted is **unknown**. `gads audience upload` should be treated as at-risk until a live
    call proves otherwise; `gads data-manager audience-upload` is the fallback path.
-2. **gads-cli pins Google Ads v24 while upstream is v25.1.** Not urgent (v24 sunsets May 2027) but it
-   is a deliberate, now-documented gap. Bumping is a code change and must be read against the v25
-   migration notes.
+2. ~~**gads-cli pins Google Ads v24 while upstream is v25.1.**~~ **RESOLVED 2026-09-04** — bumped to
+   `v25` after a live A/B run (39 read-only commands + 22 fetch-script GAQL field lists, all
+   byte-identical between `/v24/` and `/v25/`). Note `v25.1` is not a valid URL segment: only the
+   major is. `gads doctor` now carries an `api_version_currency` check that warns when the pinned
+   major falls behind the manifest's `latest_upstream_version`.
 3. **GSC legacy host retirement date is unverified.** No deprecation notice exists today.
 4. **GBP allowlist approval timing** ("7–10 business days, 4 days to 6 weeks") could not be
    re-verified from an official page.

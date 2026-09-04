@@ -93,7 +93,7 @@ from gads_lib.datamanager import (
     MAX_EVENTS_PER_REQUEST,
     MAX_AUDIENCE_MEMBERS_PER_REQUEST,
 )
-from gads_lib.kb import check_drift, list_kb_files, show_kb_file, load_manifest
+from gads_lib.kb import check_drift, list_kb_files, show_kb_file, load_manifest, api_version_currency
 from gads_lib.output import EXIT_CODES, print_error
 from gads_lib.catalog import build_catalog
 from gads_lib import dbread
@@ -868,6 +868,12 @@ def doctor(as_json):
         {"check": "sibling_cli", "status": "ok" if sibling_cli["installed"] else "warn", "detail": sibling_path or "mads not found on PATH"},
     ]
 
+    # Is the pinned Google Ads version itself stale? `kb check` cannot answer this
+    # -- it only proves the KB and the code agree, which stays true even when both
+    # are a major version behind Google.
+    _ver = api_version_currency()
+    checks.append({"check": "api_version_currency", "status": _ver["status"], "detail": _ver["detail"]})
+
     if as_json:
         print_json({"checks": checks, "sibling_cli": sibling_cli})
         return
@@ -1606,7 +1612,8 @@ def gbp_ads_perf(days, as_json):
     """)
 
     if as_json:
-        click.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+        import json as _json
+        click.echo(_json.dumps(rows, indent=2, ensure_ascii=False))
         return
 
     if not rows:
@@ -1677,7 +1684,8 @@ def gbp_ads_daily(days, as_json):
     """)
 
     if as_json:
-        click.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+        import json as _json
+        click.echo(_json.dumps(rows, indent=2, ensure_ascii=False))
         return
 
     if not rows:

@@ -31,9 +31,11 @@
 
 **Version status (re-verified 2026-09-04):** v25 went GA **2026-07-22** and v25.1 went GA **2026-08-19** — both confirmed from the static HTML of the official release-notes page (anchors `v25-2026-07-22` and `v25-1-2026-08-19`). **v25.1 is the current latest GA version.** v25.2 (~Sept 2026) and v26 (~Oct 2026) appear on that page as upcoming and are **not** GA today. The July-2026 projection recorded in the previous revision of this file has therefore been superseded by the official release notes; the third-party "monthly cadence" reporting cited below turned out to be directionally right but is no longer the basis for these dates.
 
-**gads-cli is 1 major version behind.** The CLI pins `v24` while upstream GA is `v25.1`. This is a deliberate pin, not a defect — `v24` does not sunset until **May 2027** (see below), so there is no forced-migration deadline. Bumping is a code change (`GOOGLE_ADS_API_VERSION` / `config.py`), not a KB change, and must be done against the v25 migration notes because major bumps can be breaking.
+**gads-cli is current with upstream.** The CLI pins `v25` — the URL segment for the v25 line, which is upstream GA (v25 2026-07-22, v25.1 2026-08-19). Bumped from `v24` on 2026-09-04 after a live A/B compatibility run: all 39 read-only CLI commands and all 22 GAQL field lists used by the talas-ads fetch scripts returned byte-identical result sets under `/v24/` and `/v25/`. `v25` sunsets **August 2027**.
 
-**Current gads-cli default:** `v24` (env var `GOOGLE_ADS_API_VERSION`, falls back to `"v24"` in `config.py` line 64 — confirmed via direct file read 2026-07-01). Minor versions (`v24.1`, `v24.2`) are non-breaking and apply to the same `v24` REST URL segment — no code or env var change needed to pick up their new fields (see DG-13). gads-cli does **not** need to bump to `v24.2` explicitly; it already gets v24.2 fields for free since the URL path stays `/v24/`.
+**Current gads-cli default:** `v25` (env var `GOOGLE_ADS_API_VERSION`, falls back to `"v25"` in `gads_lib/config.py` — bumped 2026-09-04).
+
+**Only the MAJOR is a URL path segment.** Minor versions (`v25.1`, `v25.2`) are non-breaking and ride the same `/v25/` REST URL segment — no code or env var change is needed to pick up their new fields (see DG-13). Setting `GOOGLE_ADS_API_VERSION=v25.1` builds `https://googleads.googleapis.com/v25.1/...`, which returns a **404 HTML error page** from Google, not a JSON API error (verified live against this account 2026-09-04). gads-cli already serves v25.1 fields for free because the path stays `/v25/`.
 
 **Sunset schedule (re-verified 2026-09-04 — the per-version table IS present in static HTML today and was read directly, superseding the previous "client-rendered / not extractable" note):** Google's documented policy remains **"Google will sunset a version 1 year after its release"**, but the published per-version dates are rounded to a month rather than falling on the exact release anniversary. Official table as read on 2026-09-04 [verified: developers.google.com/google-ads/api/docs/sunset-dates]:
 
@@ -42,8 +44,8 @@
 | v21     | 2026-08-05 (already sunset) |
 | v22     | October 2026 (tentative) |
 | v23     | February 2027 |
-| v24     | **May 2027** ← the version gads-cli pins |
-| v25     | August 2027 |
+| v24     | May 2027 |
+| v25     | **August 2027** ← the version gads-cli pins |
 
 The v23/v24 estimates carried in the previous revision (2027-01-28 / 2027-04-22), derived by applying the 1-year rule to release dates, were each about a month early and have been replaced with the official values.
 

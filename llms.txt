@@ -73,7 +73,7 @@ complete and carries `truncated`. Merchant reports use MCQL, not GAQL.
 
 - Client: Talas Ads (355-285-6345)
 - Manager: 670-695-5825
-- Currency: AED | API version: v24 (pinned; upstream GA is v25.1 as of 2026-09-04, v24 sunsets May 2027)
+- Currency: AED | API version: v25 (URL segment; serves the v25.1 GA line. v25 sunsets Aug 2027)
 
 ## Command count
 

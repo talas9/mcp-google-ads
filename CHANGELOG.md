@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.11.0] - 2026-09-04
+
+### Changed
+
+- **Google Ads API default bumped `v24` → `v25`** (`gads_lib/config.py`). v25 went GA 2026-07-22 and v25.1 on 2026-08-19; the CLI had been one major behind by choice. v25 sunsets **August 2027** (v24 would have sunset May 2027).
+  - **Only the MAJOR is a URL path segment.** `GOOGLE_ADS_API_VERSION=v25.1` builds `https://googleads.googleapis.com/v25.1/...`, which Google answers with a **404 HTML error page**, not a JSON API error — verified live against the Talas account 2026-09-04. Minor releases ride the same `/v25/` path, so the CLI already serves v25.1 fields with no further change. The manifest records this explicitly in a new `url_path_segment` key.
+  - **Validated by a live A/B run before the bump**, not by reading release notes alone: all 39 documented read-only commands, plus the 22 distinct GAQL field lists issued by the talas-ads fetch scripts (`tools/fetch_daily.py`, `tools/fetch_detail.py`, `tools/check_tracking_health.py`, `tools/full_performance_fetch.py`) were run under `/v24/` and `/v25/` and compared. Every result set was byte-identical once row order was normalised. The only textual deltas were the per-request `requestId` and the error-type URL (`...v24.errors.GoogleAdsFailure` → `...v25.errors...`).
+  - Two apparent mismatches were chased to ground and were **not** version differences: `audit`'s Quality Score section drifted because live QS changed between the two sequential runs (a same-version re-run reproduced the change), and several `LIMIT`-without-`ORDER BY` queries returned different arbitrary samples (removing the `LIMIT` gave identical full sets).
+  - None of the v25 breaking changes listed in the official release notes touch this CLI's surface. The removals target lifecycle goals, Local Services leads, reach/creator-insights planning, Demand Gen / video ad required fields, and deprecated keyword-plan forecast fields — none of which gads-cli reads or writes.
+
+### Added
+
+- **`gads doctor` now carries an `api_version_currency` check** (`gads_lib/kb.py::api_version_currency`), warning when the pinned Google Ads major is older than the manifest's `latest_upstream_version`. This closes a real blind spot: `gads kb check` compares the KB against the *code*, so it reports zero drift even when both are a major version behind Google — which is exactly the state this release fixes. The check degrades to `unknown` (never raises) on an unreadable manifest or an unparseable version, so `doctor` keeps working.
+
+### Fixed
+
+- **`gads gbp ads-perf --json` and `gads gbp ads-daily --json` crashed with `NameError: name 'json' is not defined`** (`gads_lib/cli.py`). Both `--json` branches called a bare `json.dumps`, but `cli.py` has no module-level `json` import — it uses a local `import json as _json` convention everywhere else. Every `--json` invocation of these two commands died with an unhandled traceback. Found while sweeping read-only commands for the v25 comparison. Both now use the local `_json` alias.
+
+### Notes
+
+- Test suite: 395 → **404 tests**, all passing. The one test that hardcoded `"v24"` in a mutate URL now asserts against `config.API_VERSION`, so it no longer needs editing on each version bump.
+- **Downstream action required in the talas-ads repo:** `/home/talas9/talas-ads/.env` line 13 still sets `GOOGLE_ADS_API_VERSION=v24`, which overrides this new default. Until it is changed to `v25`, the CLI keeps calling `/v24/` and `gads kb check` exits non-zero. No other talas-ads change is needed — all its GAQL was validated clean against v25.
+
 ## [3.10.0] - 2026-07-02
 
 ### Added

@@ -135,7 +135,7 @@ GOOGLE_GA4_PROPERTY_ID=271773771                 # GA4 property ID
 # Optional configuration
 GADS_TIMEZONE=Asia/Dubai                         # Default: UTC
 GADS_CURRENCY=AED                                # Default: USD
-GADS_API_VERSION=v24                             # Default: v24 (upstream GA is v25.1 as of 2026-09-04; v24 sunsets May 2027)
+GOOGLE_ADS_API_VERSION=v25                       # Default: v25 (the URL segment; minor releases v25.1/v25.2 ride the same /v25/ path). v25 sunsets Aug 2027
 GADS_HTTP_RETRIES=4                              # Default: 4 — MAX ATTEMPTS, not extra attempts
 GADS_HTTP_TIMEOUT=30                             # Default: 30 (seconds, per-request)
 
@@ -163,9 +163,9 @@ gads-cli/
 ├── gads                     # Main CLI entry point (thin shim)
 ├── gads_lib/
 │   ├── cli.py              # Click command groups and entry point (129 command paths, 123 distinct)
-│   ├── config.py           # Environment-driven configuration (Ads v24 default)
+│   ├── config.py           # Environment-driven configuration (Ads v25 default)
 │   ├── auth.py             # OAuth credential management + refresh
-│   ├── ads.py              # Google Ads REST client + GAQL runner (v24)
+│   ├── ads.py              # Google Ads REST client + GAQL runner (v25)
 │   ├── gbp.py              # GBP client (4 base URLs: account mgmt, business info, legacy v4, performance)
 │   ├── gsc.py              # Search Console client (webmasters/v3 + URL Inspection v1)
 │   ├── merchant.py         # Merchant Center client (Merchant API v1)

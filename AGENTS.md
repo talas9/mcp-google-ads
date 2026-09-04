@@ -222,11 +222,16 @@ The audit produces `overall_score` (0-100), `grade` (A-F), and per-section score
 
 **The KB drift check** (`gads kb check`) compares version strings embedded in the service modules (`ads.py`, `ga4.py`, `gbp.py`, `gsc.py`) against `kb/manifest.json`. A mismatch means the KB docs are stale relative to the code.
 
-**It does not tell you whether the code is behind upstream Google.** As of 2026-09-04 the CLI pins
-Google Ads `v24` while upstream GA is `v25.1` (released 2026-08-19) — `kb check` reports zero drift
-because the KB and the code agree. `v24` sunsets **May 2027**, so this is a deliberate pin with
-runway, not a defect. The manifest records upstream reality in `latest_upstream_version`; check that
-field, not just the drift check, before assuming the CLI is current.
+**It does not tell you whether the code is behind upstream Google.** `kb check` compares the KB
+against the code, so it reports zero drift even when both are a major version behind Google. The
+manifest records upstream reality in `latest_upstream_version`, and `gads doctor` now surfaces it as
+an `api_version_currency` check that warns when the pinned major is older than that field.
+
+As of 2026-09-04 the CLI pins Google Ads **`v25`**, which is the current GA line (v25 GA 2026-07-22,
+v25.1 GA 2026-08-19); v25 sunsets **August 2027**. Note that only the *major* is a URL path segment:
+`GOOGLE_ADS_API_VERSION=v25.1` produces `https://googleads.googleapis.com/v25.1/...` and returns a
+**404 HTML page** from Google (verified live 2026-09-04). Minor releases ride the same `/v25/` path,
+so the CLI already serves v25.1 fields without any further change.
 
 **Example workflow when bumping Google Ads API:**
 ```bash
