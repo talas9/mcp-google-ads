@@ -184,27 +184,41 @@ def _fetch_keyword_pressure(creds, d_from: str, d_to: str, top: int) -> list[dic
 
 # ── auction insights (best-effort) ───────────────────────────────────────────
 
+#: Canonical GAQL field names for the auction-insight segment/metrics on the
+#: ``campaign`` resource — verified live against the v25 API 2026-09-04 (see
+#: kb/google-ads.md Gotcha #19). The competitor domain is a SEGMENT
+#: (``segments.auction_insight_domain``), not a resource field, and the two
+#: "impression share" fields are actually named ``..._impression_percentage``.
+AUCTION_INSIGHT_DOMAIN_FIELD = "segments.auction_insight_domain"
+AUCTION_INSIGHT_METRIC_FIELDS = [
+    "metrics.auction_insight_search_impression_share",
+    "metrics.auction_insight_search_overlap_rate",
+    "metrics.auction_insight_search_position_above_rate",
+    "metrics.auction_insight_search_top_impression_percentage",
+    "metrics.auction_insight_search_absolute_top_impression_percentage",
+    "metrics.auction_insight_search_outranking_share",
+]
+
+
 def _fetch_auction_insights(creds, d_from: str, d_to: str) -> tuple[list[dict], str | None]:
     """Attempt true auction-insight query.
 
-    Google Ads GAQL does not expose a dedicated auction_insight resource in
-    v19 REST. The closest available approach is querying the
-    ``campaign`` resource with ``auction_insight.*`` segment fields.
-    This is NOT officially documented for REST, so we try it and degrade.
+    Google Ads GAQL does not expose a dedicated auction_insight *resource*;
+    the competitor domain is a SEGMENT field (``segments.auction_insight_domain``)
+    on the ``campaign`` resource, joined with ``metrics.auction_insight_search_*``
+    metrics. Two of those metrics are named ``..._impression_percentage``, not
+    ``..._impression_share`` (verified live 2026-09-04 — see kb/google-ads.md
+    Gotcha #19). The metrics themselves are allowlist-gated: an account without
+    Auction Insights API access gets PERMISSION_DENIED even with correct field
+    names, which this function surfaces as ``err`` rather than masking.
 
     Returns (rows_or_empty, error_string_or_None).
     """
-    # Attempt 1: auction_insight segment on campaign resource.
+    select_fields = ", ".join([AUCTION_INSIGHT_DOMAIN_FIELD, *AUCTION_INSIGHT_METRIC_FIELDS])
     rows, err = _run_gaql_safe(creds, f"""
         SELECT
             campaign.name,
-            auction_insight.domain,
-            metrics.auction_insight_search_impression_share,
-            metrics.auction_insight_search_overlap_rate,
-            metrics.auction_insight_search_position_above_rate,
-            metrics.auction_insight_search_top_impression_share,
-            metrics.auction_insight_search_absolute_top_impression_share,
-            metrics.auction_insight_search_outranking_share
+            {select_fields}
         FROM campaign
         WHERE segments.date BETWEEN '{d_from}' AND '{d_to}'
           AND campaign.advertising_channel_type = 'SEARCH'
@@ -218,9 +232,8 @@ def _fetch_auction_insights(creds, d_from: str, d_to: str) -> tuple[list[dict], 
     # Parse rows
     insights: dict[str, dict] = {}
     for r in rows:
-        ai = r.get("auctionInsight", {})
         m = r.get("metrics", {})
-        domain = ai.get("domain", "")
+        domain = r.get("segments", {}).get("auctionInsightDomain", "")
         if not domain:
             continue
         entry = insights.setdefault(domain, {
@@ -238,8 +251,8 @@ def _fetch_auction_insights(creds, d_from: str, d_to: str) -> tuple[list[dict], 
             ("auctionInsightSearchImpressionShare", "impression_share"),
             ("auctionInsightSearchOverlapRate", "overlap_rate"),
             ("auctionInsightSearchPositionAboveRate", "position_above_rate"),
-            ("auctionInsightSearchTopImpressionShare", "top_is"),
-            ("auctionInsightSearchAbsoluteTopImpressionShare", "abs_top_is"),
+            ("auctionInsightSearchTopImpressionPercentage", "top_is"),
+            ("auctionInsightSearchAbsoluteTopImpressionPercentage", "abs_top_is"),
             ("auctionInsightSearchOutrankingShare", "outranking_share"),
         ]:
             raw = m.get(api_key)

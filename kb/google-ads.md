@@ -1285,7 +1285,17 @@ if resp.status_code != 200:
 
 18. **camelCase in responses, snake_case in GAQL** — GAQL uses `metrics.cost_micros` but the JSON response uses `"costMicros"`. Field names transform on output.
 
-Sources: gads-cli CLAUDE.md + `gads_lib/ads.py` + doc pages fetched 2026-06-23.
+19. **Auction Insights field names + access gating (verified live 2026-09-04, v25)** — the competitor domain is a **segment**, not a resource field: `segments.auction_insight_domain` (querying it alone on `campaign` succeeds and returns real domain rows, e.g. `amazon.ae`). `auction_insight.domain` (no `segments.` prefix) is `UNRECOGNIZED_FIELD`. Of the six `metrics.auction_insight_search_*` fields, two are commonly mis-named `..._impression_share` by analogy with `metrics.search_top_impression_share` — they are actually `..._impression_percentage`:
+    - `metrics.auction_insight_search_impression_share` ✅ (real name)
+    - `metrics.auction_insight_search_overlap_rate` ✅
+    - `metrics.auction_insight_search_position_above_rate` ✅
+    - `metrics.auction_insight_search_top_impression_percentage` ⚠️ (NOT `..._top_impression_share` → that's `UNRECOGNIZED_FIELD`)
+    - `metrics.auction_insight_search_absolute_top_impression_percentage` ⚠️ (NOT `..._absolute_top_impression_share`)
+    - `metrics.auction_insight_search_outranking_share` ✅
+
+    Even with every field name correct, all six metrics are **allowlist-gated per developer token**: an unallowlisted token gets `403 PERMISSION_DENIED` / `authorizationError: METRIC_ACCESS_DENIED`, `"The developer doesn't have access to metrics: '<field>'."` — distinct from the `queryError: UNRECOGNIZED_FIELD` a wrong field name produces. The Talas token got `METRIC_ACCESS_DENIED` on every metric field tested 2026-09-04 (`segments.auction_insight_domain` alone is unaffected — it returned data with no metrics attached). Public sources report the Auction Insights API allowlist program is currently closed to new applicants. Treat any auction-insight code path as: field names must match this list exactly, and a `METRIC_ACCESS_DENIED` result is an account-access gap, not a code bug. See `gads_lib/analyze/competitive.py::_fetch_auction_insights`.
+
+Sources: gads-cli CLAUDE.md + `gads_lib/ads.py` + doc pages fetched 2026-06-23; #19 verified live against the account 2026-09-04 (field-by-field probing) plus community reports (groups.google.com/g/adwords-api threads on Auction Insights GAQL access).
 
 
 ---
