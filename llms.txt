@@ -34,6 +34,28 @@ POST to developerRegistration:registerGcp. One-time setup; wait ~5 min after.
 New top-level command: `gads audit [--days N] [--format md|json]`
 Runs the full 12-section compliance audit. `--format json` for agent pipelines.
 
+## New Commands (2026-09-04)
+
+Performance Max (read-only, new `pmax` group — distinct from `asset`):
+- `gads pmax asset-groups [--campaign ID]` — status, ad strength, performance
+- `gads pmax signals [--campaign ID]` — audience + search-theme signals
+- `gads pmax listing-groups [--campaign ID]` — listing group filters (product partitions)
+- `gads pmax search-terms --campaign ID [--days N]` — search-term category insights (`--campaign` required)
+
+Shopping and Merchant reports:
+- `gads report shopping [--days N]` — per-SKU Shopping performance (`shopping_performance_view`)
+- `gads merchant report -q "..."` — Merchant reports sub-API escape hatch (own SQL-like dialect, NOT GAQL)
+- `gads merchant report-product-performance [--days N]` — canned per-SKU clicks/impressions/CTR (no cost; free-traffic conversions only)
+
+Account-level negative keywords (blocks a term in EVERY campaign, vs. campaign-level `keyword negative`):
+- `gads keyword account-negative list`
+- `gads keyword account-negative add TEXT [-m EXACT|PHRASE|BROAD]`
+
+Behavior change: `gads batch-mutate` now sends `partialFailure=true` — a partially-failed batch
+applies its successful operations instead of being rejected atomically, and exits non-zero.
+
+New env vars: `GADS_HTTP_RETRIES` (default 4), `GADS_HTTP_TIMEOUT` (default 30s).
+
 ## Account
 
 - Client: Talas Ads (355-285-6345)

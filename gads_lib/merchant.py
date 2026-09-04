@@ -259,4 +259,8 @@ def mc_register_gcp(creds, developer_email: str, account_id: str | None = None,
         headers=get_bearer_headers(creds),
         json_body={"developerEmail": developer_email},
         as_json=as_json,
+        # Explicit, in addition to the URL-shape default: this registers a
+        # GCP project, so correctness must not depend on http.py's URL
+        # classification alone.
+        idempotent=False,
     )

@@ -67,13 +67,28 @@ class TestReportShopping:
             assert field in query, f"missing {field} in query: {query}"
 
     def test_default_days_is_30(self, fake_creds):
+        """Freeze time and assert the LITERAL expected d_from/d_to strings
+        (not a tautological "BETWEEN...AND" check, which would pass even for
+        a same-day window), and that today's date never appears in the
+        query -- enforcing the project's never-use-same-day-data rule."""
+        import datetime as real_datetime_module
+
+        class _FrozenDatetime(real_datetime_module.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime_module.datetime(2026, 9, 4, 10, 0, 0)
+
         runner = CliRunner()
         with patch("gads_lib.cli.get_credentials", return_value=fake_creds), \
-             patch("gads_lib.cli.run_gaql", return_value=[]) as mock_gaql:
+             patch("gads_lib.cli.run_gaql", return_value=[]) as mock_gaql, \
+             patch("datetime.datetime", _FrozenDatetime):
             runner.invoke(cli, ["report", "shopping"])
 
         query = mock_gaql.call_args[0][1]
-        assert "BETWEEN" in query and "AND" in query
+        assert "d_from" not in query  # sanity: interpolated, not left as a placeholder
+        assert "2026-08-05" in query  # d_from: 30 days before frozen "today"
+        assert "2026-09-03" in query  # d_to: yesterday relative to frozen "today"
+        assert "2026-09-04" not in query  # today's date must never appear (lag rule)
 
     def test_zero_rows_is_valid_result_exit_0(self, fake_creds):
         """Zero Shopping rows (no Shopping campaigns) must exit 0, not error."""
@@ -151,6 +166,24 @@ class TestMerchantReportEscapeHatch:
 
         assert result.exit_code == 0, result.output
         assert "no results" in result.output.lower()
+
+    def test_column_missing_from_row_0_but_present_later_is_not_dropped(self, fake_creds):
+        """Columns must be unioned across ALL rows, not derived from row 0
+        alone -- a nullable field the API omits on the first row (but sends
+        on a later one) must still get a header and appear in the table."""
+        runner = CliRunner()
+        page = {"results": [
+            {"productView": {"id": "p1", "title": "No Brand Widget"}},
+            {"productView": {"id": "p2", "title": "Branded Widget", "brand": "Tesla"}},
+        ]}
+        fake_resp = _mc_response(200, page)
+        with patch("gads_lib.cli.get_credentials", return_value=fake_creds), \
+             patch("requests.Session.request", return_value=fake_resp):
+            result = runner.invoke(cli, ["merchant", "report", "-q", "SELECT id, title, brand FROM product_view"])
+
+        assert result.exit_code == 0, result.output
+        assert "brand" in result.output.lower()
+        assert "Tesla" in result.output
 
 
 class TestMerchantReportProductPerformance:
@@ -315,18 +348,35 @@ class TestKeywordAccountNegativeAdd:
         assert mock_batch.called
         ops = mock_batch.call_args[0][1]
         assert len(ops) == 3
-        assert ops[0] == {"sharedSetOperation": {"create": {
-            "type": "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS",
-            "name": "Account-level negative keywords (gads-cli)",
-        }}}
-        assert ops[1] == {"customerNegativeCriterionOperation": {"create": {
-            "negativeKeywordList": {"sharedSet": "customers/1234567890/sharedSets/-1"},
-        }}}
-        assert ops[2] == {"sharedCriterionOperation": {"create": {
-            "sharedSet": "customers/1234567890/sharedSets/-1",
-            "keyword": {"text": "repair", "matchType": "EXACT"},
-            "negative": True,
-        }}}
+
+        # INVARIANT (regression guard for the P0 "provisioning batch rejected
+        # on first real run" bug): the temp resource name declared on ops[0]'s
+        # sharedSetOperation.create (the op that provisions the new shared
+        # set) must be the SAME resource name that ops[1] and ops[2]
+        # reference to attach to it. Google Ads batch mutate only binds a
+        # later reference to a temp id (e.g. "customers/{CID}/sharedSets/-1")
+        # to the op that CREATES it if that create op itself declares
+        # "resourceName" -- see kb/google-ads.md § Atomic batch creation
+        # example. An exact-dict snapshot of ops[0] would pass even with the
+        # resourceName silently missing (it did, historically); asserting the
+        # binding directly is what catches that regression.
+        shared_set_create = ops[0]["sharedSetOperation"]["create"]
+        declared_resource_name = shared_set_create.get("resourceName")
+        assert declared_resource_name, (
+            "ops[0]'s sharedSetOperation.create must declare a resourceName "
+            "for the temp shared set, otherwise ops[1]/ops[2]'s reference to "
+            "it binds to nothing and Google rejects the whole batch"
+        )
+        assert shared_set_create["type"] == "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS"
+        assert shared_set_create["name"] == "Account-level negative keywords (gads-cli)"
+
+        referenced_by_negative_criterion = ops[1]["customerNegativeCriterionOperation"]["create"]["negativeKeywordList"]["sharedSet"]
+        referenced_by_shared_criterion = ops[2]["sharedCriterionOperation"]["create"]["sharedSet"]
+        assert referenced_by_negative_criterion == declared_resource_name
+        assert referenced_by_shared_criterion == declared_resource_name
+
+        assert ops[2]["sharedCriterionOperation"]["create"]["keyword"] == {"text": "repair", "matchType": "EXACT"}
+        assert ops[2]["sharedCriterionOperation"]["create"]["negative"] is True
 
     def test_help_text_mentions_parts_only_use_case(self):
         runner = CliRunner()

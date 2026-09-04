@@ -2172,9 +2172,18 @@ def merchant_report(query, as_json):
         return print_json({"results": rows, "total": len(rows), "truncated": truncated})
     if not rows:
         return click.echo("  (no results)")
-    view_name, first_view = _mc_report_row_view(rows[0])
-    columns = list(first_view.keys())
+    view_name, _ = _mc_report_row_view(rows[0])
     table_rows = [_mc_report_row_view(r)[1] for r in rows]
+    # Union the keys across ALL rows (not just row 0) so a column absent from
+    # the first row -- e.g. a nullable field that happens to be unset on the
+    # first result -- still gets a header and shows blank for the rows that
+    # lack it, instead of being silently dropped from the table entirely.
+    # First-seen order is preserved via dict insertion order.
+    columns = {}
+    for tr in table_rows:
+        for k in tr:
+            columns[k] = True
+    columns = list(columns)
     print_table(table_rows, columns)
     click.echo(f"  {len(rows)} row(s) from {view_name or 'report'}")
 
@@ -3065,6 +3074,7 @@ def keyword_account_negative_add(text, match_type, dry_run, yes, as_json):
             return
         ops = [
             {"sharedSetOperation": {"create": {
+                "resourceName": f"customers/{CUSTOMER_ID}/sharedSets/-1",
                 "type": "ACCOUNT_LEVEL_NEGATIVE_KEYWORDS",
                 "name": "Account-level negative keywords (gads-cli)"}}},
             {"customerNegativeCriterionOperation": {"create": {
@@ -3074,7 +3084,22 @@ def keyword_account_negative_add(text, match_type, dry_run, yes, as_json):
                 "keyword": {"text": text, "matchType": match_type.upper()},
                 "negative": True}}},
         ]
-        result = ads_batch_mutate(creds, ops)
+        # All-or-nothing: this batch provisions a shared set AND attaches it
+        # in one request. partialFailure=True would let op[0] (create the
+        # shared set) succeed while op[1]/op[2] (attach it) fail, orphaning
+        # an unattached shared set that the next `add` would provision
+        # another of. partial_failure=False makes the whole batch atomic.
+        result = ads_batch_mutate(creds, ops, partial_failure=False)
+        per_op, unattributed_errors = parse_partial_failure(
+            result, len(ops), results_key="mutateOperationResponses")
+        if any(not op["ok"] for op in per_op) or unattributed_errors:
+            click.secho("✗ Provisioning batch failed:", fg="red", err=True)
+            for op in per_op:
+                if not op["ok"]:
+                    click.secho(f"  ✗ [{op['index']}] {op['error_message']}", fg="red", err=True)
+            for msg in unattributed_errors:
+                click.secho(f"  ✗ (unattributed) {msg}", fg="red", err=True)
+            raise SystemExit(EXIT_CODES["API"])
         _auto_log("keyword_account_negative_add", f"'{text}' [{match_type}] → new account-level list")
 
     if as_json:
@@ -4031,7 +4056,7 @@ def report_shopping(days, as_json):
 # campaign_search_term_insight) | verified live 2026-09-04
 
 @pmax_group.command("asset-groups")
-@click.option("--campaign", "-c", "campaign_id", default=None, help="Filter to one campaign ID.")
+@click.option("--campaign", "-c", "campaign_id", type=int, default=None, help="Filter to one campaign ID.")
 @click.option("--json", "as_json", is_flag=True)
 def pmax_asset_groups(campaign_id, as_json):
     """List Performance Max asset groups with status, ad strength, and performance.
@@ -4066,7 +4091,7 @@ def pmax_asset_groups(campaign_id, as_json):
                         "reasons", "ad_strength", "impr", "clicks", "conv", "cost", "conv_value"])
 
 @pmax_group.command("signals")
-@click.option("--campaign", "-c", "campaign_id", default=None, help="Filter to one campaign ID.")
+@click.option("--campaign", "-c", "campaign_id", type=int, default=None, help="Filter to one campaign ID.")
 @click.option("--json", "as_json", is_flag=True)
 def pmax_signals(campaign_id, as_json):
     """List Performance Max asset group signals (audience + search theme).
@@ -4102,7 +4127,7 @@ def pmax_signals(campaign_id, as_json):
     print_table(rows, ["campaign", "asset_group", "type", "signal", "approval_status", "disapproval_reasons"])
 
 @pmax_group.command("listing-groups")
-@click.option("--campaign", "-c", "campaign_id", default=None, help="Filter to one campaign ID.")
+@click.option("--campaign", "-c", "campaign_id", type=int, default=None, help="Filter to one campaign ID.")
 @click.option("--json", "as_json", is_flag=True)
 def pmax_listing_groups(campaign_id, as_json):
     """List Performance Max asset group listing group filters (product partitions).
@@ -4162,7 +4187,7 @@ def pmax_listing_groups(campaign_id, as_json):
     print_table(rows, ["campaign", "asset_group", "id", "type", "listing_source", "dimension", "parent"])
 
 @pmax_group.command("search-terms")
-@click.option("--campaign", "-c", "campaign_id", required=True,
+@click.option("--campaign", "-c", "campaign_id", type=int, required=True,
               help="REQUIRED — campaign_search_term_insight only accepts a single-campaign filter "
                    "(verified live: omitting it raises REQUIRES_FILTER_BY_SINGLE_RESOURCE).")
 @click.option("--days", "-d", type=int, default=30)
@@ -4266,16 +4291,22 @@ def batch_mutate_cmd(operations_json, dry_run, yes, as_json):
     # partialFailure=true means HTTP 200 no longer implies every operation
     # succeeded -- always inspect the per-operation results before reporting
     # success (this is the bug being fixed: silently reporting success on a
-    # partially-failed batch).
-    per_op = parse_partial_failure(result, len(ops), results_key="mutateOperationResponses")
+    # partially-failed batch). unattributed_errors are errors the API
+    # couldn't tie to a specific operation index (routine for request-level
+    # errors) -- their presence must also block a "success" report, since
+    # per_op alone doesn't tell the whole story in that case.
+    per_op, unattributed_errors = parse_partial_failure(
+        result, len(ops), results_key="mutateOperationResponses")
     failed_count = sum(1 for op in per_op if not op["ok"])
+    has_failure = bool(failed_count) or bool(unattributed_errors)
 
     if as_json:
         print_json({
-            "status": "partial_failure" if failed_count else "success",
+            "status": "partial_failure" if has_failure else "success",
             "total": len(ops),
             "failed_count": failed_count,
             "operations": per_op,
+            "unattributed_errors": unattributed_errors,
             "result": result,
         })
     else:
@@ -4284,15 +4315,18 @@ def batch_mutate_cmd(operations_json, dry_run, yes, as_json):
                 click.secho(f"  ✓ [{op['index']}] ok", fg="green")
             else:
                 click.secho(f"  ✗ [{op['index']}] {op['error_message']}", fg="red", err=True)
-        if failed_count:
+        for msg in unattributed_errors:
+            click.secho(f"  ✗ (unattributed) {msg}", fg="red", err=True)
+        if has_failure:
             click.secho(
-                f"✗ Batch mutate: {failed_count}/{len(ops)} operation(s) failed",
+                f"✗ Batch mutate: {failed_count}/{len(ops)} operation(s) failed"
+                + (f", {len(unattributed_errors)} unattributed error(s)" if unattributed_errors else ""),
                 fg="red", err=True,
             )
         else:
             click.secho("✓ Batch mutate complete", fg="green")
 
-    if failed_count:
+    if has_failure:
         raise SystemExit(EXIT_CODES["API"])
 
 

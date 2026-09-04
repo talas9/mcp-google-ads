@@ -411,6 +411,11 @@ def gbp_create_local_post(creds, account_name, location_id, post_body, as_json=F
         headers=get_bearer_headers(creds),
         json_body=post_body,
         as_json=as_json,
+        # Explicit, in addition to the URL-shape default: retrying this after
+        # a response could double-post publicly to the client's Business
+        # Profile, so correctness here must not depend on http.py's URL
+        # classification alone.
+        idempotent=False,
     )
 
 

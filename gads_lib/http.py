@@ -21,20 +21,46 @@ _DEFAULT_RETRIES = 4
 _DEFAULT_TIMEOUT = 30.0
 _MAX_RETRY_WAIT = 60.0  # cap on any single backoff/Retry-After sleep
 
-# HTTP status codes worth retrying (rate limit + transient server errors).
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# Transient server errors. These are ambiguous: the request may already have
+# been applied server-side, so they are only retried for idempotent calls.
+_RETRYABLE_STATUS = {500, 502, 503, 504}
 
-# A POST to one of these colon-RPC suffixes performs a mutation and must not
-# be retried after a response is received (retrying could double-apply it).
-# Reads (searchStream, search, GET, etc.) are unaffected -- see _is_idempotent.
-_NON_IDEMPOTENT_SUFFIXES = (
-    ":mutate",
-    ":mutateAll",
-    ":uploadClickConversions",
-    ":ingest",
-    ":run",
-    ":addOperations",
-    ":create",
+# 429 (Too Many Requests) means the server THROTTLED the request and did not
+# process it, so retrying cannot double-apply a mutation. It is therefore
+# retried regardless of idempotency -- which is what the offline-user-data
+# upload path relied on before it moved onto this shared layer.
+_RETRYABLE_STATUS_ALWAYS = {429}
+
+# Fail-closed by design: a POST is presumed to be a MUTATION (and therefore
+# unsafe to retry after a response is received -- retrying could double-apply
+# it, e.g. double-posting to a public Google Business Profile) UNLESS its URL
+# matches one of the READ endpoints below. Google Ads mutations all use
+# colon-RPC verbs like ":mutate", but other Google APIs used by this CLI
+# (Google Business Profile v4, Merchant API's developerRegistration, GA4
+# Admin's keyEvents) POST to URLs with NO recognisable mutate suffix at all --
+# so the old approach of denylisting known-mutate suffixes silently treated
+# every other POST (including those false-negatives) as safe to retry. Do
+# not add a URL here unless it is confirmed to have no side effects.
+#
+# Colon-RPC read endpoints (matched by URL path suffix, e.g. ".../googleAds:search"):
+_IDEMPOTENT_POST_SUFFIXES = (
+    ":searchStream",            # Google Ads REST -- run_gaql
+    ":search",                  # Google Ads REST paged search; also matches
+                                 # Merchant API's "reports:search"
+    ":runReport",                # GA4 Data API
+    ":runRealtimeReport",        # GA4 Data API
+    ":batchRunReports",          # GA4 Data API
+    ":runPivotReport",           # GA4 Data API
+    ":checkCompatibility",       # GA4 Data API
+    ":inspect",                  # Search Console URL Inspection ("index:inspect")
+    ":generateKeywordIdeas",           # Google Ads REST
+    ":generateKeywordForecastMetrics",  # Google Ads REST
+)
+
+# Non-colon-RPC read endpoints (REST sub-resource "action" paths that don't
+# use the colon-RPC convention), matched by URL path suffix:
+_IDEMPOTENT_POST_PATH_SUFFIXES = (
+    "/searchAnalytics/query",   # Search Console
 )
 
 _session = None
@@ -73,14 +99,17 @@ def _is_idempotent(method, url):
     """True if it is safe to retry this request after an error response.
 
     Every non-POST method (GET/DELETE/PUT/...) is treated as idempotent.
-    A POST is idempotent unless its URL path ends in one of the mutate-style
-    colon-RPC suffixes (searchStream/search and other read POSTs still count
-    as idempotent since they don't end in those suffixes).
+    A POST is fail-closed: NON-idempotent (unsafe to retry) unless its URL
+    matches a recognised read endpoint (see _IDEMPOTENT_POST_SUFFIXES /
+    _IDEMPOTENT_POST_PATH_SUFFIXES above). This is deliberately the inverse
+    of a denylist -- an unrecognised POST (a new endpoint added later, or one
+    this classification missed) defaults to "do not retry", which risks an
+    extra manual retry rather than risking a silently duplicated mutation.
     """
     if (method or "").upper() != "POST":
         return True
     path = (url or "").split("?", 1)[0]
-    return not path.endswith(_NON_IDEMPOTENT_SUFFIXES)
+    return path.endswith(_IDEMPOTENT_POST_SUFFIXES) or path.endswith(_IDEMPOTENT_POST_PATH_SUFFIXES)
 
 
 def _parse_retry_after(value):
@@ -158,11 +187,11 @@ def _send_with_retry(method, url, *, headers=None, params=None, json_body=None,
             time.sleep(_backoff_delay(attempt))
             continue
 
-        if (
-            is_idempotent
-            and resp.status_code in _RETRYABLE_STATUS
-            and attempt < max_attempts
-        ):
+        retryable_status = (
+            resp.status_code in _RETRYABLE_STATUS_ALWAYS
+            or (is_idempotent and resp.status_code in _RETRYABLE_STATUS)
+        )
+        if retryable_status and attempt < max_attempts:
             retry_after = _parse_retry_after(
                 (getattr(resp, "headers", None) or {}).get("Retry-After")
             )

@@ -2229,6 +2229,33 @@ returned one existing criterion (`CONTENT_LABEL` / `PARKED_DOMAIN`), no
 `NEGATIVE_KEYWORD_LIST` yet provisioned — so `add` was verified with mocked
 HTTP only per the task's constraint (no live mutations run).
 
+**Correction (2026-09-04 code review):** the first shipped version of the
+3-step batch above had a bug that the mocked-HTTP verification did NOT catch:
+`sharedSetOperation.create` never DECLARED `"resourceName":
+"customers/{CID}/sharedSets/-1"` on its own create body (see § Atomic batch
+creation example below — the creating op MUST carry the temp resourceName
+for a later op's reference to that same temp id to bind to anything). Ops
+1/2 referenced `customers/{CID}/sharedSets/-1` in `negativeKeywordList.sharedSet`
+/ `sharedCriterionOperation.create.sharedSet`, but with nothing declaring
+that name, the batch would have been rejected by the live API on its first
+real run. The original test asserted an exact-dict snapshot of `ops[0]`,
+which passed even with the field missing — it never asserted the *binding*
+between the declared and referenced resource names. Fixed in
+`gads_lib/cli.py`'s `keyword_account_negative_add`; the regression test now
+asserts the invariant (declared resourceName on ops[0] == the name ops[1]/
+ops[2] reference), not a snapshot (`tests/test_shopping_negatives.py`).
+
+Separately, this same batch was calling `ads_batch_mutate` with the default
+`partialFailure=True`, which is wrong here: the batch provisions the shared
+set AND attaches a criterion to it in one request, and needs ALL-OR-NOTHING
+semantics — with `partialFailure=True`, op0 (create the shared set) could
+succeed while op1/op2 (attach to it) fail, orphaning an unattached shared
+set that the next `add` would provision *another* one of. `ads_batch_mutate`
+now accepts an explicit `partial_failure` keyword (default `True`, unchanged
+for `gads batch-mutate` and all other existing callers); this call site
+passes `partial_failure=False` and runs the response through
+`parse_partial_failure()` before reporting success.
+
 ---
 
 ### DG-8. Conversion Tracking
@@ -2604,6 +2631,20 @@ When `partialFailure: true`, successful operations commit and failed ones return
 ```
 
 Empty `{}` in `results` corresponds to a failed operation. Match by index to `partialFailureError.details[0].errors[].location.fieldPathElements[0].index`.
+
+**`gads_lib.ads.parse_partial_failure()` gotchas (fixed 2026-09-04 code review):**
+an error's `location.fieldPathElements` does not always carry an `index` —
+request-level errors routinely omit one, since there's no single operation
+to attribute them to. `parse_partial_failure()` returns a `(per_op,
+unattributed_errors)` tuple (NOT just `per_op`, as an earlier version did):
+every caller must check `unattributed_errors` and treat a non-empty list as
+a failure, even when every attributed op in `per_op` reports `ok: True` —
+otherwise a batch that failed at the request level silently reports success.
+Two more edge cases it now handles: the REST API may serialise `index` as a
+*string* (`"1"` not `1`) — coerced via `int()` in a `try`, since `1 in
+{"1": ...}` is `False` and would make that index's lookup miss entirely; and
+two errors can be attributed to the *same* index — both are kept (joined
+with `"; "`), not last-write-wins.
 
 #### Retry strategy
 

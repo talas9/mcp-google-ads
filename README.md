@@ -14,7 +14,7 @@ Built for AI coding agents (Claude Code, Cursor, etc.) and human operators. Ever
 
 ## Features
 
-**117 commands** across 19 groups covering the full Google Ads operational surface:
+**129 commands** across 20 groups covering the full Google Ads operational surface:
 
 | Group | Commands | Description |
 |-------|----------|-------------|
@@ -24,15 +24,16 @@ Built for AI coding agents (Claude Code, Cursor, etc.) and human operators. Ever
 | **Campaign** | `campaign list`, `status`, `budget`, `perf` | List, enable/pause, change budget, campaign-level metrics from API |
 | **Ad Group** | `adgroup list`, `status`, `create` | List, enable/pause, create ad groups |
 | **Ad** | `ad list`, `status`, `perf` | List ads with creatives, enable/pause, ad-level metrics |
-| **Keyword** | `keyword list`, `add`, `remove`, `negative`, `search-terms`, `ideas`★, `forecast`★ | Keyword management, search terms report, Keyword Planner research |
+| **Keyword** | `keyword list`, `add`, `remove`, `negative`, `search-terms`, `ideas`★, `forecast`★, `account-negative list`, `account-negative add` | Keyword management, search terms report, Keyword Planner research; `account-negative` mutates account-wide negative criteria (all campaigns), vs. campaign-level `negative` |
 | **Asset** | `asset list`, `sitelink`, `callout`, `call` | List assets, add sitelinks/callouts/call extensions (two-step creation) |
 | **Conversion** | `conversion list`, `create`, `set-primary`, `tag`, `perf`, `upload` | Conversion actions, tracking tags, Primary/Secondary toggling, performance by action, offline upload |
 | **Audience** | `audience list`, `create`, `upload`, `job-status` | Customer Match user lists, CSV upload with SHA-256 hashing + consent |
 | **Data Manager** | `data-manager conversion-ingest`, `audience-upload` | Modern events/audience ingestion via the Data Manager API — async `{requestId}`-only response, parallel to (not a replacement for) the legacy Conversion Upload / Customer Match paths |
-| **Report** | `report geo`, `hourly`, `devices`, `search-terms` | Geographic, hourly, device, and search term performance breakdowns |
+| **Pmax** | `pmax asset-groups`, `signals`, `listing-groups`, `search-terms` | Performance Max (read-only) — asset groups with ad strength, audience/search-theme signals, listing group filters (product partitions), search-term category insights |
+| **Report** | `report geo`, `hourly`, `devices`, `search-terms`, `shopping` | Geographic, hourly, device, search term, and per-SKU Shopping (`shopping_performance_view`) performance breakdowns |
 | **GBP** | `gbp accounts`, `locations`, `location`, `reviews`, `reply-review`, `delete-reply`, `perf`, `perf-all`, `search-keywords`, `metrics-list`, `ads-perf`, `ads-daily`, `batch-reviews`, `local-posts`, `create-post`, `delete-post` | Google Business Profile management + performance analytics + local posts CRUD |
 | **GSC** | `gsc sites`, `queries`, `pages`, `performance`, `inspect`, `sitemaps` | Google Search Console — search queries, pages, daily performance, URL Inspection API, sitemaps list |
-| **Merchant** | `merchant account`, `status`, `products`, `product-status`, `feeds`, `shipping`, `returns`, `register-gcp` | Merchant Center (Merchant API v1) — no dev token needed; `register-gcp` fixes GCP_NOT_REGISTERED |
+| **Merchant** | `merchant account`, `status`, `products`, `product-status`, `feeds`, `shipping`, `returns`, `register-gcp`, `report`, `report-product-performance` | Merchant Center (Merchant API v1) — no dev token needed; `register-gcp` fixes GCP_NOT_REGISTERED; `report`/`report-product-performance` use the separate Merchant reports sub-API (its own query dialect, not GAQL) |
 | **GA4** | `ga4 report`, `realtime`, `metadata`, `batch-report`, `pivot-report`, `check-compatibility`, `key-events list/create/bulk/delete` | GA4 Data API + Admin API — reporting, batch/pivot, compatibility check, key-event management |
 | **KB** | `kb check`, `kb list`, `kb show` | API knowledge-base drift check (CI-able), listing, and display |
 | **Auth** | `auth status`, `setup`, `login`, `revoke`, `test` | Interactive setup wizard, OAuth flow, credential diagnostics |
@@ -155,6 +156,10 @@ gads keyword negative 12345 "free" -m BROAD   # Add negative keyword
 gads keyword search-terms --days 7 --min-clicks 2  # Search terms report
 gads keyword ideas -k "tesla parts,used parts" --geo 2784  # Keyword Planner ★
 gads keyword forecast -k "tesla parts" --geo 2784           # Volume forecast ★
+
+# Account-level negatives (block a term in EVERY campaign at once)
+gads keyword account-negative list                          # All account-wide negative criteria
+gads keyword account-negative add "installation" -m PHRASE  # Auto-provisions the shared set on first use
 ```
 
 ### Assets & Extensions
@@ -208,6 +213,16 @@ gads data-manager audience-upload data.csv --list-resource-name 987654321 --yes 
 > legacy `conversion upload` / `audience upload` commands above). See
 > [`kb/data-manager-api.md`](kb/data-manager-api.md) for the full schema reference.
 
+### Performance Max (read-only)
+
+```bash
+gads pmax asset-groups                        # Asset groups: status, ad strength, performance
+gads pmax asset-groups --campaign 12345        # Filter to one campaign
+gads pmax signals --campaign 12345             # Audience + search-theme signals
+gads pmax listing-groups --campaign 12345      # Listing group filters (product partitions)
+gads pmax search-terms --campaign 12345 --days 30  # Search-term category insights (--campaign required)
+```
+
 ### Reports
 
 ```bash
@@ -215,6 +230,7 @@ gads report geo --days 7             # Geographic breakdown
 gads report hourly --days 7          # Hourly performance
 gads report devices --days 7         # Device breakdown
 gads report search-terms --days 7    # Search terms report
+gads report shopping --days 7        # Per-SKU Shopping performance (shopping_performance_view)
 ```
 
 ### Generic Mutations (escape hatch)
@@ -223,6 +239,10 @@ gads report search-terms --days 7    # Search terms report
 gads mutate campaigns '[{"update": {"resourceName": "...", "status": "PAUSED"}, "updateMask": "status"}]'
 gads batch-mutate '[{"campaignOperation": {"update": ...}}]'
 ```
+
+> ⚠️ `batch-mutate` sends `partialFailure=true`: if some operations in the batch fail, the
+> successful ones are still applied (not rejected atomically), per-operation results are printed,
+> and the command exits non-zero.
 
 ### Google Business Profile
 
@@ -245,6 +265,10 @@ gads merchant product-status         # Approval statuses + account-wide cascade 
 gads merchant feeds                  # Data feeds
 gads merchant shipping               # Shipping settings
 gads merchant returns                # Return policy
+
+# Merchant reports sub-API (its own SQL-like query dialect — NOT GAQL)
+gads merchant report -q "SELECT offer_id, title, clicks FROM product_performance_view WHERE date BETWEEN '2026-08-01' AND '2026-08-30' ORDER BY clicks DESC LIMIT 50"
+gads merchant report-product-performance --days 30   # Canned per-SKU clicks/impressions/CTR (no cost; free-traffic conversions only)
 ```
 
 ### Google Analytics (GA4)
@@ -291,6 +315,8 @@ All configuration via environment variables or `.env` file. See [`.env.example`]
 | `GADS_TIMEZONE` | Optional (default: `UTC`) | IANA timezone (e.g. `America/New_York`) |
 | `GADS_CURRENCY` | Optional (default: `USD`) | ISO 4217 code (e.g. `AED`, `EUR`) |
 | `GOOGLE_ADS_API_VERSION` | Optional (default: `v24`) | API version |
+| `GADS_HTTP_RETRIES` | Optional (default: `4`) | Max attempts for retryable HTTP requests (429/5xx/connection errors) |
+| `GADS_HTTP_TIMEOUT` | Optional (default: `30`) | Per-request timeout in seconds |
 
 > **GBP, GSC, Merchant Center, and GA4 commands do NOT need a developer token** — only OAuth credentials.
 
@@ -305,8 +331,10 @@ All configuration via environment variables or `.env` file. See [`.env.example`]
 | `merchant *` | No | `content` | — |
 | `ga4 *` | No | `analytics.readonly` | — |
 | `query`, `perf`, `campaign *`, `adgroup *`, `ad *`, `report *` | Yes | `adwords` | Explorer |
-| `keyword add/remove/negative/search-terms` | Yes | `adwords` | Explorer |
+| `keyword add/remove/negative/search-terms/account-negative` | Yes | `adwords` | Explorer |
 | `keyword ideas`, `keyword forecast` | Yes | `adwords` | **Standard** |
+| `pmax *` | Yes | `adwords` | Explorer |
+| `merchant report`, `merchant report-product-performance` | No | `content` | — |
 | `audience upload` | Yes | `adwords` | Basic |
 | `data-manager conversion-ingest`, `data-manager audience-upload` | No | `datamanager` | — |
 | `campaign status/budget`, `asset *`, `mutate *` | Yes | `adwords` | Explorer |
@@ -408,7 +436,7 @@ gads-cli/
 ├── gads.sh               # Shell wrapper with .env loading
 ├── gads_lib/
 │   ├── __init__.py       # Version + public API exports
-│   ├── cli.py            # All Click command groups (110 commands)
+│   ├── cli.py            # All Click command groups (129 commands)
 │   ├── config.py         # Scope-aware env config
 │   ├── auth.py           # OAuth credential management
 │   ├── ads.py            # Google Ads REST client + GAQL + mutations (Ads v24)
@@ -425,7 +453,7 @@ gads-cli/
 │   ├── output.py         # Table/JSON formatters + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py       # Timezone-aware helpers
 ├── kb/                   # API knowledge base (5 md files + INDEX.md + manifest.json)
-├── tests/                # 127 tests (offline/CI-safe)
+├── tests/                # 373 tests (offline/CI-safe)
 ├── fetch_daily.py        # Cron-friendly daily data fetcher
 ├── generate_token.py     # OAuth token generator (6 scopes incl. webmasters.readonly)
 ├── scripts/install.sh    # Interactive installer

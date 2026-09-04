@@ -30,15 +30,16 @@ python generate_token.py
 | `campaign` | `list`, `status`, `budget`, `perf` | Campaign management and performance | Yes |
 | `adgroup` | `list`, `status`, `create` | Ad group management | Yes |
 | `ad` | `list`, `status`, `perf` | Ad management and ad-level metrics | Yes |
-| `keyword` | `list`, `add`, `remove`, `negative`, `search-terms`, `ideas`★, `forecast`★ | Keyword research and management | Yes |
+| `keyword` | `list`, `add`, `remove`, `negative`, `search-terms`, `ideas`★, `forecast`★, `account-negative` (`list`/`add`) | Keyword research and management; `account-negative` mutates account-wide (all-campaigns) negative criteria, distinct from campaign-level `negative` | Yes |
 | `asset` | `list`, `sitelink`, `callout`, `call` | Asset management and extensions (two-step creation) | Yes |
 | `conversion` | `list`, `create`, `set-primary`, `tag`, `perf`, `upload` | Conversion tracking, Primary/Secondary toggling, and offline upload | Yes |
 | `audience` | `list`, `create`, `upload`, `job-status` | Customer Match lists and CSV upload | Yes |
 | `data-manager` | `conversion-ingest`, `audience-upload` | Data Manager API — modern async events/audience ingestion, parallel to `conversion upload` / `audience upload` | No |
-| `report` | `geo`, `hourly`, `devices`, `search-terms` | Specialized performance breakdowns | Yes |
+| `pmax` | `asset-groups`, `signals`, `listing-groups`, `search-terms` | Performance Max read-only coverage — asset groups, audience/search-theme signals, listing group filters, search-term category insights | Yes |
+| `report` | `geo`, `hourly`, `devices`, `search-terms`, `shopping` | Specialized performance breakdowns; `shopping` is per-SKU Shopping performance (`shopping_performance_view`) | Yes |
 | `gbp` | `accounts`, `locations`, `location`, `reviews`, `reply-review`, `delete-reply`, `perf`, `perf-all`, `search-keywords`, `metrics-list`, `ads-perf`, `ads-daily`, `batch-reviews`, `local-posts`, `create-post`, `delete-post` | Google Business Profile management + performance analytics + local posts CRUD | No (except `ads-perf`, `ads-daily`) |
 | `gsc` | `sites`, `queries`, `pages`, `performance`, `inspect`, `sitemaps` | Google Search Console — queries, pages, daily performance, URL Inspection API, sitemaps | No |
-| `merchant` | `account`, `status`, `products`, `product-status`, `feeds`, `shipping`, `returns`, `register-gcp` | Merchant Center product management (Merchant API v1); `register-gcp` fixes GCP_NOT_REGISTERED (one-time setup) | No |
+| `merchant` | `account`, `status`, `products`, `product-status`, `feeds`, `shipping`, `returns`, `register-gcp`, `report`, `report-product-performance` | Merchant Center product management (Merchant API v1); `register-gcp` fixes GCP_NOT_REGISTERED (one-time setup); `report`/`report-product-performance` use the separate Merchant reports sub-API (its own query dialect, not GAQL) | No |
 | `ga4` | `report`, `realtime`, `metadata`, `batch-report`, `pivot-report`, `check-compatibility`, `key-events` (`list`/`create`/`bulk`/`delete`) | GA4 Data API + Admin API — reporting, batch/pivot, compatibility check, key events | No |
 | `kb` | `check`, `list`, `show` | API knowledge-base drift check (CI-able), listing, and display | No |
 | Top-level | `query`, `perf`, `config`, `refresh`, `snapshot`, `log`, `accounts`, `doctor`, `catalog`, `db`, `changelog`, `decisions`, `milestones`, `mutate`, `batch-mutate` | GAQL queries, syncing, snapshots, command catalog, history-DB passthrough, generic mutations | Yes (except `doctor`, `catalog`, `db`, `changelog`, `decisions`, `milestones`) |
@@ -135,6 +136,8 @@ GOOGLE_GA4_PROPERTY_ID=271773771                 # GA4 property ID
 GADS_TIMEZONE=Asia/Dubai                         # Default: UTC
 GADS_CURRENCY=AED                                # Default: USD
 GADS_API_VERSION=v24                             # Default: v24
+GADS_HTTP_RETRIES=4                              # Default: 4 (read/retryable requests only)
+GADS_HTTP_TIMEOUT=30                             # Default: 30 (seconds, per-request)
 
 # Paths (auto-detected by default)
 GADS_CREDENTIALS_PATH=credentials/google-ads-oauth.json
@@ -148,7 +151,7 @@ GADS_SNAPSHOTS_DIR=snapshots
 gads-cli/
 ├── gads                     # Main CLI entry point (thin shim)
 ├── gads_lib/
-│   ├── cli.py              # Click command groups and entry point (110 commands)
+│   ├── cli.py              # Click command groups and entry point (129 commands)
 │   ├── config.py           # Environment-driven configuration (Ads v24 default)
 │   ├── auth.py             # OAuth credential management + refresh
 │   ├── ads.py              # Google Ads REST client + GAQL runner (v24)
@@ -170,7 +173,7 @@ gads-cli/
 │   ├── output.py           # Table/JSON formatting + classify_api_error + offer_gcloud_enable
 │   └── timeutil.py         # Timezone-aware time helpers
 ├── kb/                     # API knowledge base (5 API docs + INDEX.md + manifest.json)
-├── tests/                  # 127 tests — offline/CI-safe, covers all service modules
+├── tests/                  # 373 tests — offline/CI-safe, covers all service modules
 ├── fetch_daily.py          # Cron-friendly daily data fetcher
 ├── generate_token.py       # Interactive OAuth token generator (6 scopes)
 ├── pyproject.toml          # Package metadata
@@ -200,6 +203,8 @@ gads-cli/
 7. **Keyword special characters** — endpoints like `generateKeywordIdeas` reject keywords with `! @ % , * '` characters. Always sanitize input.
 
 8. **addyInfo with empty names in Customer Match** — sending `{"addressInfo": {"countryCode": "AE"}}` with no valid names is silently dropped. Validate names before including addressInfo.
+
+9. **`gads batch-mutate` sends `partialFailure=true`** — a batch where some operations fail no longer rejects the whole batch atomically; the successful operations are applied, per-operation results are printed, and the command exits non-zero if any operation failed. Design for partial application, not all-or-nothing.
 
 ### GBP
 

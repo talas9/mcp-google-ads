@@ -91,19 +91,20 @@ class TestParsePartialFailure:
         from gads_lib.ads import parse_partial_failure
 
         response = _partial_failure_response(3, {})
-        out = parse_partial_failure(response, 3)
+        out, unattributed = parse_partial_failure(response, 3)
 
         assert len(out) == 3
         assert all(op["ok"] for op in out)
         assert [op["index"] for op in out] == [0, 1, 2]
         assert out[0]["result"] == {"campaignResult": {"resourceName": "customers/1/campaigns/0"}}
+        assert unattributed == []
 
     def test_3_of_5_fail(self):
         from gads_lib.ads import parse_partial_failure
 
         failed = {1: "duplicate name", 2: "invalid budget", 4: "resource not found"}
         response = _partial_failure_response(5, failed)
-        out = parse_partial_failure(response, 5)
+        out, unattributed = parse_partial_failure(response, 5)
 
         assert len(out) == 5
         ok_flags = [op["ok"] for op in out]
@@ -114,6 +115,7 @@ class TestParsePartialFailure:
         # succeeded ops still carry their result
         assert out[0]["result"] is not None
         assert out[3]["result"] is not None
+        assert unattributed == []
 
     def test_custom_results_key(self):
         """parse_partial_failure works with a different aligned-results key,
@@ -131,10 +133,89 @@ class TestParsePartialFailure:
                 }]
             },
         }
-        out = parse_partial_failure(response, 2, results_key="results")
+        out, unattributed = parse_partial_failure(response, 2, results_key="results")
         assert out[0]["ok"] is True
         assert out[1]["ok"] is False
         assert out[1]["error_message"] == "invalid gclid"
+        assert unattributed == []
+
+    def test_unindexed_error_is_surfaced_as_unattributed_not_silently_ok(self):
+        """A request-level error whose location.fieldPathElements carries no
+        'index' cannot be tied to an operation -- it must come back via
+        unattributed_errors, and every attributed op still reports its own
+        (here: all-ok) status. Silently discarding it would let a caller
+        report success on a batch that actually failed at the request level.
+        """
+        from gads_lib.ads import parse_partial_failure
+
+        response = {
+            "mutateOperationResponses": [
+                {"campaignResult": {"resourceName": "customers/1/campaigns/0"}},
+            ],
+            "partialFailureError": {
+                "message": "1 operation(s) failed.",
+                "details": [{
+                    "errors": [{
+                        "message": "internal error, no operation attributable",
+                        "location": {"fieldPathElements": [{"fieldName": "mutateOperations"}]},
+                    }]
+                }],
+            },
+        }
+        out, unattributed = parse_partial_failure(response, 1)
+        assert out == [{"index": 0, "ok": True, "result": {"campaignResult": {"resourceName": "customers/1/campaigns/0"}}}]
+        assert unattributed == ["internal error, no operation attributable"]
+
+    def test_string_index_is_coerced_not_dropped(self):
+        """The REST API may serialise the index as a string ("1" instead of 1).
+        Without int() coercion, `1 in {"1": ...}` is False, so the error would
+        never match its operation and index 1 would wrongly report ok:True."""
+        from gads_lib.ads import parse_partial_failure
+
+        response = {
+            "mutateOperationResponses": [{}, {}],
+            "partialFailureError": {
+                "details": [{
+                    "errors": [{
+                        "message": "duplicate name",
+                        "location": {"fieldPathElements": [{"fieldName": "mutateOperations", "index": "1"}]},
+                    }]
+                }]
+            },
+        }
+        out, unattributed = parse_partial_failure(response, 2)
+        assert out[0]["ok"] is True
+        assert out[1]["ok"] is False
+        assert out[1]["error_message"] == "duplicate name"
+        assert unattributed == []
+
+    def test_duplicate_index_collects_all_messages_not_last_write_wins(self):
+        """Two errors attributed to the same index must both survive -- not
+        have the second silently overwrite the first."""
+        from gads_lib.ads import parse_partial_failure
+
+        response = {
+            "mutateOperationResponses": [{}],
+            "partialFailureError": {
+                "details": [{
+                    "errors": [
+                        {
+                            "message": "duplicate name",
+                            "location": {"fieldPathElements": [{"fieldName": "mutateOperations", "index": 0}]},
+                        },
+                        {
+                            "message": "invalid budget",
+                            "location": {"fieldPathElements": [{"fieldName": "mutateOperations", "index": 0}]},
+                        },
+                    ]
+                }]
+            },
+        }
+        out, unattributed = parse_partial_failure(response, 1)
+        assert out[0]["ok"] is False
+        assert "duplicate name" in out[0]["error_message"]
+        assert "invalid budget" in out[0]["error_message"]
+        assert unattributed == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -250,3 +331,45 @@ class TestBatchMutateCli:
         assert result.exit_code == 0, result.output
         sent_body = mock_req.call_args[1]["json"]
         assert sent_body["partialFailure"] is True
+
+    def test_unattributed_error_fails_even_when_every_indexed_op_reports_ok(self):
+        """An error with no operation index (a request-level failure) must
+        block a 'success' report even though every attributed op is ok --
+        this is the P1-2 bug: without this, batch_mutate_cmd would print
+        success and exit 0 on a batch that actually failed."""
+        from click.testing import CliRunner
+        from gads_lib.cli import cli
+        from gads_lib.output import EXIT_CODES
+
+        ops = [{"campaignOperation": {"create": {"name": "c0"}}}]
+        response = {
+            "mutateOperationResponses": [
+                {"campaignResult": {"resourceName": "customers/1/campaigns/0"}},
+            ],
+            "partialFailureError": {
+                "message": "1 operation(s) failed.",
+                "details": [{
+                    "errors": [{
+                        "message": "internal error, no operation attributable",
+                        "location": {"fieldPathElements": [{"fieldName": "mutateOperations"}]},
+                    }]
+                }],
+            },
+        }
+
+        runner = CliRunner()
+        with patch("gads_lib.cli.get_credentials", return_value=MagicMock()), \
+             patch("gads_lib.cli.ads_batch_mutate", return_value=response), \
+             patch("gads_lib.cli.get_db", side_effect=SystemExit(1)):
+            result = runner.invoke(
+                cli,
+                ["batch-mutate", json.dumps(ops), "--yes", "--json"],
+            )
+
+        assert result.exit_code == EXIT_CODES["API"], result.output
+        parsed = json.loads(result.output)
+        assert parsed["status"] == "partial_failure"
+        assert parsed["unattributed_errors"] == ["internal error, no operation attributable"]
+        # the one attributed op is still reported as ok -- it's the
+        # unattributed error alone that must trip the failure.
+        assert parsed["operations"][0]["ok"] is True

@@ -198,7 +198,12 @@ def create_key_event(property_id, creds, event_name, counting_method="ONCE_PER_S
     pid = _normalise_property(property_id)
     url = f"{GA4_ADMIN_BASE}/properties/{pid}/keyEvents"
     body = {"eventName": event_name, "countingMethod": counting_method}
-    resp = _send_with_retry("POST", url, headers=get_bearer_headers(creds), json_body=body, timeout=30)
+    # Explicit, in addition to the URL-shape default: this creates a keyEvent,
+    # so correctness must not depend on http.py's URL classification alone.
+    resp = _send_with_retry(
+        "POST", url, headers=get_bearer_headers(creds), json_body=body, timeout=30,
+        idempotent=False,
+    )
     if resp.status_code == 409:
         # Already exists — look it up from the list so we still return a dict.
         for existing in list_key_events(pid, creds, as_json=False):

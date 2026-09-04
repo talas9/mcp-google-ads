@@ -282,18 +282,30 @@ class TestPmaxSearchTerms:
 
     def test_default_days_is_30_ending_yesterday(self, fake_creds):
         """Default window matches the report_geo/keyword_search_terms convention:
-        never same-day data (attribution lag)."""
-        from datetime import datetime, timedelta
+        never same-day data (attribution lag). Freeze time and assert the
+        LITERAL expected d_from/d_to strings -- recomputing the same
+        expression the implementation uses (as the old version of this test
+        did) would pass even if the implementation regressed to a same-day
+        window, since both sides would drift together. Also assert today's
+        date string does NOT appear in the query, directly enforcing the
+        never-use-same-day-data rule."""
+        import datetime as real_datetime_module
+
+        class _FrozenDatetime(real_datetime_module.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime_module.datetime(2026, 9, 4, 10, 0, 0)
+
         runner = CliRunner()
         with patch("gads_lib.cli.get_credentials", return_value=fake_creds), \
-             patch("gads_lib.cli.run_gaql", return_value=[]) as mock_gaql:
+             patch("gads_lib.cli.run_gaql", return_value=[]) as mock_gaql, \
+             patch("datetime.datetime", _FrozenDatetime):
             runner.invoke(cli, ["pmax", "search-terms", "--campaign", "1"])
 
         query = mock_gaql.call_args[0][1]
-        d_to = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        d_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        assert d_to in query
-        assert d_from in query
+        assert "2026-08-05" in query  # d_from: 30 days before frozen "today"
+        assert "2026-09-03" in query  # d_to: yesterday relative to frozen "today"
+        assert "2026-09-04" not in query  # today's date must never appear (lag rule)
 
     def test_days_option_overrides_default(self, fake_creds):
         from datetime import datetime, timedelta

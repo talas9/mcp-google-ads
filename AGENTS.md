@@ -71,6 +71,43 @@ Writes happen through the existing named commands (e.g. `log`, `snapshot`, `muta
 2. Run the mutation command
 3. `tools/gads log` — record what was done and why
 
+**`tools/gads batch-mutate` sends `partialFailure=true`.** A batch where some operations fail no
+longer rejects the whole batch atomically — the successful operations are applied, per-operation
+results are printed, and the command exits non-zero if any operation failed. Check the exit code
+and per-operation results rather than assuming all-or-nothing.
+
+**`tools/gads keyword account-negative add|list`** mutates ACCOUNT-WIDE negative criteria (blocks
+a term in every campaign at once), structurally distinct from the existing campaign-level
+`tools/gads keyword negative`. Useful for enforcing the PARTS-ONLY business rule everywhere in one
+call instead of repeating the negative per campaign.
+
+## Performance Max (read-only)
+
+```bash
+tools/gads pmax asset-groups   [--campaign ID] [--json]   # status, ad strength, performance
+tools/gads pmax signals        [--campaign ID] [--json]   # audience + search-theme signals
+tools/gads pmax listing-groups [--campaign ID] [--json]   # listing group filters (product partitions)
+tools/gads pmax search-terms   --campaign ID [--days N] [--json]  # search-term category insights (--campaign required)
+```
+
+`pmax` is a separate group from the pre-existing `asset` group — `asset` mutates legacy
+campaignAssets for Search extensions, not Performance Max resources.
+
+## Merchant Reports Sub-API
+
+`tools/gads merchant report` and `tools/gads merchant report-product-performance` use the Merchant
+reports sub-API, which has its **own SQL-like query dialect** — it is NOT GAQL and the two are not
+interchangeable. See `kb/merchant-api.md` for the table/column reference.
+
+```bash
+tools/gads merchant report -q "SELECT offer_id, title, clicks FROM product_performance_view WHERE date BETWEEN '2026-08-01' AND '2026-08-30' ORDER BY clicks DESC LIMIT 50"
+tools/gads merchant report-product-performance --days 30 --json
+```
+
+`product_performance_view` has no cost field, and its conversion columns cover FREE (organic
+Shopping listing) traffic only, never paid Shopping ads — use `tools/gads report shopping` for
+paid Shopping performance including cost.
+
 ## Invocation
 
 All commands are run from the project root `/home/talas9/talas-ads`:

@@ -150,6 +150,35 @@ class TestNonIdempotentMutateRetries:
         assert mock_req.call_count == 1
         assert no_sleep == []
 
+    def test_mutate_post_IS_retried_on_429(self, no_sleep):
+        """429 means the server throttled the request without processing it.
+
+        Retrying therefore cannot double-apply the mutation, so it must be
+        retried even for a non-idempotent call -- unlike an ambiguous 5xx.
+        """
+        ok = _resp(200, "{}")
+
+        with patch(
+            "requests.Session.request",
+            side_effect=[_resp(429, "rate limited"), ok],
+        ) as mock_req:
+            result = http.request_json("POST", self.MUTATE_URL, json_body={})
+
+        assert result == {}
+        assert mock_req.call_count == 2
+        assert len(no_sleep) == 1
+
+    def test_mutate_post_429_honours_retry_after(self, no_sleep):
+        ok = _resp(200, "{}")
+
+        with patch(
+            "requests.Session.request",
+            side_effect=[_resp(429, "slow down", headers={"Retry-After": "7"}), ok],
+        ):
+            http.request_json("POST", self.MUTATE_URL, json_body={})
+
+        assert no_sleep == [7.0]
+
     def test_get_and_search_stream_are_idempotent(self):
         assert http._is_idempotent("GET", self.MUTATE_URL) is True
         assert http._is_idempotent(

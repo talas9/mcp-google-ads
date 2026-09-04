@@ -1598,7 +1598,9 @@ class TestAudienceUploadCsv:
     """audience_upload_csv — Customer Match CSV upload (3 HTTP calls)."""
 
     def test_job_create_add_and_run_calls(self, fake_creds, tmp_path):
-        """All 3 HTTP calls happen: job create, addOperations, run."""
+        """All 3 HTTP calls happen: job create, addOperations, run -- all
+        routed through the shared retry-aware session (gads_lib.http), not a
+        standalone requests.post call."""
         from gads_lib.ads import audience_upload_csv
 
         # Write a minimal CSV
@@ -1615,18 +1617,17 @@ class TestAudienceUploadCsv:
         create_resp.text = json.dumps({"resourceName": job_rn})
         create_resp.json.return_value = {"resourceName": job_rn}
 
-        run_resp = MagicMock()
-        run_resp.status_code = 200
-        run_resp.text = json.dumps({})
-        run_resp.json.return_value = {}
-
         batch_resp = MagicMock()
         batch_resp.status_code = 200
         batch_resp.text = json.dumps({"totalOperationsCount": 1})
         batch_resp.json.return_value = {"totalOperationsCount": 1}
 
-        with patch("requests.Session.request", side_effect=[create_resp, run_resp]) as mock_request, \
-             patch("requests.post", return_value=batch_resp) as mock_post:
+        run_resp = MagicMock()
+        run_resp.status_code = 200
+        run_resp.text = json.dumps({})
+        run_resp.json.return_value = {}
+
+        with patch("requests.Session.request", side_effect=[create_resp, batch_resp, run_resp]) as mock_request:
             returned_job, stats = audience_upload_csv(
                 fake_creds,
                 "customers/1234567890/userLists/list-001",
@@ -1638,18 +1639,18 @@ class TestAudienceUploadCsv:
         assert stats["rows_uploaded"] >= 1
 
         # Verify job create call (first requests.request call)
-        assert mock_request.call_count == 2
+        assert mock_request.call_count == 3
         create_call_url = mock_request.call_args_list[0][0][1]
         assert "offlineUserDataJobs:create" in create_call_url
 
-        # Verify run call (second requests.request call)
-        run_call_url = mock_request.call_args_list[1][0][1]
-        assert ":run" in run_call_url
+        # Verify addOperations batch call (second requests.request call) --
+        # now routed through the shared session, not requests.post directly.
+        add_call_url = mock_request.call_args_list[1][0][1]
+        assert "addOperations" in add_call_url
 
-        # Verify addOperations batch call used requests.post
-        assert mock_post.called
-        add_url = mock_post.call_args[0][0]
-        assert "addOperations" in add_url
+        # Verify run call (third requests.request call)
+        run_call_url = mock_request.call_args_list[2][0][1]
+        assert ":run" in run_call_url
 
     def test_job_payload_includes_consent(self, fake_creds, tmp_path):
         """Job creation payload must include consent fields."""
@@ -1677,8 +1678,7 @@ class TestAudienceUploadCsv:
         batch_resp.text = json.dumps({})
         batch_resp.json.return_value = {}
 
-        with patch("requests.Session.request", side_effect=[create_resp, run_resp]) as mock_request, \
-             patch("requests.post", return_value=batch_resp):
+        with patch("requests.Session.request", side_effect=[create_resp, batch_resp, run_resp]) as mock_request:
             audience_upload_csv(
                 fake_creds,
                 "customers/1234567890/userLists/list-001",
@@ -2504,6 +2504,39 @@ class TestGbpCreateLocalPost:
         assert "localPosts" in called_url
         sent_body = mock_req.call_args[1]["json"]
         assert sent_body["summary"] == "New Tesla parts now available"
+
+    def test_not_retried_on_503(self, fake_creds):
+        """P0 regression guard: gbp v4 localPosts create has NO colon-RPC
+        suffix, so the old denylist-based idempotency check treated it as
+        safe to retry -- retrying it after a response is received could
+        double-post publicly to the client's Business Profile. Must be
+        retried zero times (single attempt) on a 503.
+        """
+        from gads_lib.gbp import gbp_create_local_post
+        from gads_lib import http as http_module
+
+        fake_resp = MagicMock()
+        fake_resp.status_code = 503
+        fake_resp.text = "Service Unavailable"
+        fake_resp.headers = {}
+
+        sleeps = []
+        with patch("requests.Session.request", return_value=fake_resp) as mock_req, \
+             patch.object(http_module.time, "sleep", lambda s: sleeps.append(s)), \
+             pytest.raises(SystemExit):
+            gbp_create_local_post(fake_creds, "accounts/123", "456", {"summary": "x"})
+
+        assert mock_req.call_count == 1
+        assert sleeps == []
+
+    def test_url_shape_is_classified_non_idempotent(self):
+        """Direct unit check of the exact URL shape from the finding."""
+        from gads_lib import http as http_module
+
+        assert http_module._is_idempotent(
+            "POST",
+            "https://mybusiness.googleapis.com/v4/accounts/1/locations/2/localPosts",
+        ) is False
 
 
 class TestGbpDeleteLocalPost:

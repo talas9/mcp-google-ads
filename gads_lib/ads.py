@@ -7,11 +7,9 @@ Official docs: https://developers.google.com/google-ads/api/docs/rest/reference/
 import re
 import unicodedata
 import click
-import requests
 
 from .config import API_VERSION, CUSTOMER_ID, DEV_TOKEN, LOGIN_CUSTOMER_ID
 from .http import request_json
-from .output import EXIT_CODES, classify_api_error
 
 
 # Canonical mapping: snake_case aliases → Google Ads REST camelCase plural resource names.
@@ -207,7 +205,7 @@ def ads_mutate(creds, resource_path, operations):
 
 
 # KB: kb/google-ads.md § batch-mutate | https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/customers/mutate
-def ads_batch_mutate(creds, mutate_operations):
+def ads_batch_mutate(creds, mutate_operations, partial_failure=True):
     """Cross-resource batch mutate operation.
 
     POST to /googleAds:mutate with {"mutateOperations": mutate_operations}
@@ -222,6 +220,13 @@ def ads_batch_mutate(creds, mutate_operations):
     fails everything; WITH it, a caller must inspect the response body via
     parse_partial_failure() to know which operations actually succeeded,
     since HTTP 200 alone no longer means "all operations succeeded".
+
+    partial_failure: defaults to True (unchanged default -- existing callers,
+    including `gads batch-mutate`, are unaffected). Pass False for a batch
+    that needs ALL-OR-NOTHING semantics, e.g. a batch that provisions a
+    resource (via a temp -1 id) AND attaches it in the same request: with
+    partialFailure=True the create could succeed while the attach fails,
+    orphaning the created resource.
     Returns response JSON.
     """
     url = (
@@ -229,7 +234,7 @@ def ads_batch_mutate(creds, mutate_operations):
         f"/customers/{CUSTOMER_ID}/googleAds:mutate"
     )
     headers = get_ads_headers(creds)
-    payload = {"mutateOperations": mutate_operations, "partialFailure": True}
+    payload = {"mutateOperations": mutate_operations, "partialFailure": partial_failure}
 
     return request_json("POST", url, headers=headers, json_body=payload)
 
@@ -252,12 +257,23 @@ def parse_partial_failure(response, total_ops, results_key="mutateOperationRespo
     "mutateOperationResponses" for customers.googleAds:mutate, "results" for
     :uploadClickConversions or a single-resource :mutate).
 
-    Returns a list of exactly `total_ops` dicts, one per submitted operation
-    in order:
-      - success: {"index": i, "ok": True, "result": <results[i] or None>}
-      - failure: {"index": i, "ok": False, "error_message": <str>}
+    Returns a tuple (per_op, unattributed_errors):
+      - per_op: a list of exactly `total_ops` dicts, one per submitted
+        operation in order:
+          - success: {"index": i, "ok": True, "result": <results[i] or None>}
+          - failure: {"index": i, "ok": False, "error_message": <str>}
+        Multiple errors for the same index are joined with "; " rather than
+        the last one silently overwriting the others.
+      - unattributed_errors: a list of error message strings that could NOT
+        be attributed to a specific operation index (e.g. a request-level
+        error whose location.fieldPathElements carries no "index" -- this
+        happens routinely). A NON-EMPTY unattributed_errors means the batch
+        outcome is NOT fully known from per_op alone -- callers MUST treat
+        this as a failure even when every attributed op reports ok:True,
+        never silently report success on it.
     """
     errors_by_index = {}
+    unattributed_errors = []
     partial_error = response.get("partialFailureError")
     if partial_error:
         for detail in partial_error.get("details", []):
@@ -266,22 +282,31 @@ def parse_partial_failure(response, total_ops, results_key="mutateOperationRespo
                 idx = None
                 for elem in loc.get("fieldPathElements", []):
                     if "index" in elem:
-                        idx = elem["index"]
+                        raw_idx = elem["index"]
+                        try:
+                            idx = int(raw_idx)
+                        except (TypeError, ValueError):
+                            # REST may serialise the index as a string, or
+                            # something unparseable; either way it cannot be
+                            # attributed, so fall through to unattributed
+                            # rather than raising or silently mismatching.
+                            idx = None
                         break
-                if idx is None:
-                    continue  # no operation index to attribute this error to
                 message = error.get("message") or str(error.get("errorCode", {}))
-                errors_by_index[idx] = message
+                if idx is None:
+                    unattributed_errors.append(message)
+                else:
+                    errors_by_index.setdefault(idx, []).append(message)
 
     results = response.get(results_key) or []
     out = []
     for i in range(total_ops):
         if i in errors_by_index:
-            out.append({"index": i, "ok": False, "error_message": errors_by_index[i]})
+            out.append({"index": i, "ok": False, "error_message": "; ".join(errors_by_index[i])})
         else:
             result = results[i] if i < len(results) else None
             out.append({"index": i, "ok": True, "result": result})
-    return out
+    return out, unattributed_errors
 
 
 # KB: kb/google-ads.md § conversion-upload | https://developers.google.com/google-ads/api/docs/rest/reference/rest/v24/customers/uploadClickConversions
@@ -416,7 +441,6 @@ def generate_keyword_forecast(creds, keywords, language_id="1000", geo_ids=None,
 
 import csv
 import hashlib
-import time
 
 
 def _sha256(val):
@@ -613,33 +637,25 @@ def audience_upload_csv(creds, list_resource_name, csv_path, batch_size=100, max
             fg="yellow",
         )
 
-    # 3. Upload in batches with retry
+    # 3. Upload in batches, routed through the shared retry-aware HTTP layer
+    # (gads_lib.http) instead of a hand-rolled requests.post loop -- this
+    # gives it session reuse, Retry-After handling, and ConnectionError
+    # retry like every other call in the CLI. addOperations is a mutation,
+    # so idempotent=False is passed explicitly: a lost/duplicated response
+    # after the operations were already applied server-side must not be
+    # blindly retried (the same guard that protects gbp_create_local_post
+    # etc. — see gads_lib/http.py's _is_idempotent).
     add_url = f"https://googleads.googleapis.com/{API_VERSION}/{job_rn}:addOperations"
     uploaded = 0
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
-        for attempt in range(5):
-            resp = requests.post(
-                add_url, headers=headers,
-                json={"operations": batch, "enableWarnings": True},
-                timeout=120,
-            )
-            if resp.status_code == 200:
-                uploaded += len(batch)
-                break
-            elif resp.status_code == 429:
-                delay = 10 * (attempt + 1)
-                click.echo(f"  Rate limited — waiting {delay}s (attempt {attempt + 1}/5)")
-                time.sleep(delay)
-            else:
-                click.secho(f"✗ Upload batch failed: {resp.text[:500]}", fg="red", err=True)
-                classified = classify_api_error(resp.status_code, resp.text)
-                if classified:
-                    click.secho(f"  {classified.get('message', '')}", fg="yellow", err=True)
-                raise SystemExit(EXIT_CODES["API"])
-        else:
-            click.secho("✗ Upload failed after 5 retries (429)", fg="red", err=True)
-            raise SystemExit(EXIT_CODES["API"])
+        request_json(
+            "POST", add_url, headers=headers,
+            json_body={"operations": batch, "enableWarnings": True},
+            timeout=120,
+            idempotent=False,
+        )
+        uploaded += len(batch)
 
     click.echo(f"  Uploaded: {uploaded} operations in {(len(rows) + batch_size - 1) // batch_size} batches")
 
